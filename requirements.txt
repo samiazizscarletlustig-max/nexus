@@ -1,0 +1,30 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  NEXUS v11.0  —  requirements.txt                                           ║
+# ║  Quantum Institutional Terminal  |  Clean Deploy on Render / Streamlit Cloud ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# ── Streamlit UI Framework ────────────────────────────────────────────────────
+streamlit>=1.35.0
+
+# ── Market Data Feeds ─────────────────────────────────────────────────────────
+yfinance>=0.2.40          # Gold, Indices, Forex, Crypto (Yahoo Finance)
+ccxt>=4.3.0               # Crypto via Binance public endpoint (no key required)
+
+# ── Data & Scientific Computing ───────────────────────────────────────────────
+pandas>=2.1.0
+numpy>=1.26.0
+scipy>=1.12.0
+
+# ── Visualization ─────────────────────────────────────────────────────────────
+plotly>=5.20.0
+
+# ── HTTP & RSS ────────────────────────────────────────────────────────────────
+requests>=2.31.0
+feedparser>=6.0.11
+
+# ── Sentiment Scoring ─────────────────────────────────────────────────────────
+vaderSentiment>=3.3.2     # Lightweight VADER — no NLTK corpus download required
+
+# ── FastAPI REST (Flutter / external clients) ─────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
