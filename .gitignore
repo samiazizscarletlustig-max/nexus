@@ -1,0 +1,61 @@
+# ╔══════════════════════════════════════════════════════╗
+# ║  NEXUS v12.0 — .gitignore                          ║
+# ║  NEVER commit secrets or sensitive files!          ║
+# ╚══════════════════════════════════════════════════════╝
+
+# ── Environment Variables (CRITICAL!) ──────────────────
+.env
+.env.local
+.env.*.local
+*.env
+
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# ── Virtual Environments ───────────────────────────────
+venv/
+ENV/
+env/
+.venv/
+
+# ── IDE ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Logs ───────────────────────────────────────────────
+*.log
+logs/
+
+# ── Testing ────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Jupyter ────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── OS ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

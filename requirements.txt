@@ -1,30 +1,68 @@
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  NEXUS v11.0  —  requirements.txt                                           ║
-# ║  Quantum Institutional Terminal  |  Clean Deploy on Render / Streamlit Cloud ║
+# ║  NEXUS v12.0  —  requirements.txt                                          ║
+# ║  Quantum Institutional Terminal  |  FastAPI Backend + Flutter Mobile       ║
+# ║  Price Sources: OANDA (Real Broker) + Binance (Crypto) + Yahoo (Backup)    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# ── Streamlit UI Framework ────────────────────────────────────────────────────
-streamlit>=1.35.0
+# ── Core Backend Framework (FastAPI REST API) ────────────────────────────────
+fastapi>=0.115.0                    # Modern async web framework
+uvicorn[standard]>=0.30.0           # ASGI server for FastAPI
+python-multipart>=0.0.6             # File upload support
+pydantic>=2.5.0                     # Data validation (FastAPI dependency)
+pydantic-settings>=2.1.0            # Settings management with .env
 
-# ── Market Data Feeds ─────────────────────────────────────────────────────────
-yfinance>=0.2.40          # Gold, Indices, Forex, Crypto (Yahoo Finance)
-ccxt>=4.3.0               # Crypto via Binance public endpoint (no key required)
+# ── Market Data Feeds (Multi-Source) ─────────────────────────────────────────
+yfinance>=0.2.40                    # Backup: Gold, Indices, Forex (Yahoo Finance)
+ccxt>=4.3.0                         # Crypto via Binance (public endpoint, no key)
+# OANDA API uses built-in `requests` library (see below)
 
-# ── Data & Scientific Computing ───────────────────────────────────────────────
-pandas>=2.1.0
-numpy>=1.26.0
-scipy>=1.12.0
+# ── Data & Scientific Computing ──────────────────────────────────────────────
+numpy>=1.26.0                       # Numerical operations (core for indicators)
+pandas>=2.1.0                       # Data manipulation and time series
+scipy>=1.12.0                       # Scientific computing (kurtosis, skew, etc.)
 
-# ── Visualization ─────────────────────────────────────────────────────────────
-plotly>=5.20.0
+# ── HTTP & Networking ────────────────────────────────────────────────────────
+requests>=2.31.0                    # HTTP client (used for OANDA API)
+aiohttp>=3.9.0                      # Async HTTP client (future optimization)
 
-# ── HTTP & RSS ────────────────────────────────────────────────────────────────
-requests>=2.31.0
-feedparser>=6.0.11
+# ── Sentiment Analysis ───────────────────────────────────────────────────────
+vaderSentiment>=3.3.2               # VADER sentiment (no NLTK corpus needed)
+feedparser>=6.0.11                  # RSS feed parsing for news
 
-# ── Sentiment Scoring ─────────────────────────────────────────────────────────
-vaderSentiment>=3.3.2     # Lightweight VADER — no NLTK corpus download required
+# ── Authentication & Security (for Subscriptions) ───────────────────────────
+python-jose[cryptography]>=3.3.0    # JWT tokens for user auth
+passlib[bcrypt]>=1.7.4              # Password hashing
+python-dotenv>=1.0.0                # Load environment variables from .env
 
-# ── FastAPI REST (Flutter / external clients) ─────────────────────────────────
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+# ── Database (Supabase / PostgreSQL) ─────────────────────────────────────────
+supabase>=2.3.0                     # Supabase Python client
+sqlalchemy>=2.0.0                   # ORM (alternative to Supabase)
+
+# ── Payment Gateway (Lemon Squeezy / Stripe) ────────────────────────────────
+stripe>=7.0.0                       # Stripe SDK (backup payment option)
+# Lemon Squeezy uses webhooks via FastAPI (no SDK needed)
+
+# ── Caching (Performance Optimization - P2) ──────────────────────────────────
+redis>=5.0.0                        # Redis client for caching OHLCV data
+
+# ── Monitoring & Logging ─────────────────────────────────────────────────────
+structlog>=23.2.0                   # Structured logging
+sentry-sdk[fastapi]>=1.39.0         # Error tracking (optional, free tier)
+
+# ── Development & Testing ────────────────────────────────────────────────────
+pytest>=7.4.0                       # Unit testing framework
+pytest-asyncio>=0.23.0              # Async test support
+black>=23.12.0                      # Code formatting
+ruff>=0.1.0                         # Fast Python linter
+
+# ── Legacy UI (Streamlit - can be removed if using Flutter only) ─────────────
+# streamlit>=1.35.0                 # Uncomment if you still use Streamlit UI
+# plotly>=5.20.0                    # Uncomment if you still use Plotly charts
+
+# ════════════════════════════════════════════════════════════════════════════
+# INSTALLATION COMMAND:
+#   pip install -r requirements.txt
+#
+# PRODUCTION DEPLOYMENT (Railway/Render):
+#   The platform will auto-install these when you push to GitHub
+# ════════════════════════════════════════════════════════════════════════════
