@@ -317,7 +317,7 @@ class NewsItem:
     affected_assets: List[str] = field(default_factory=list)
 
 # ============================================
-# SECTION 3 — ASSET CONFIGURATIONS
+# SECTION 3 — ASSET CONFIGURATIONS (10 ASSETS)
 # ============================================
 
 GOLD_CFG = AssetConfig(
@@ -328,6 +328,16 @@ GOLD_CFG = AssetConfig(
     color="#D4AF37", emoji="⚡",
     tick_size=0.01, tick_value=1.0, min_lot=0.01, max_lot=100.0, lot_step=0.01,
     leverage=100, spread_pips=3.0, oanda_symbol="XAU_USD"
+)
+
+SILVER_CFG = AssetConfig(
+    name="SILVER (XAG/USD)", symbol="XAGUSD", yf_ticker="SI=F",
+    ccxt_symbol=None, asset_type="commodity",
+    pip_size=0.01, pip_value_per_lot=50.0, contract_size=5000,
+    price_lo=10.0, price_hi=100.0, is_24_7=False,
+    color="#C0C0C0", emoji="🥈",
+    tick_size=0.001, tick_value=50.0, min_lot=0.01, max_lot=100.0, lot_step=0.01,
+    leverage=100, spread_pips=3.5, oanda_symbol="XAG_USD"
 )
 
 BTC_CFG = AssetConfig(
@@ -350,6 +360,16 @@ ETH_CFG = AssetConfig(
     leverage=20, spread_pips=40.0, oanda_symbol="ETH_USD"
 )
 
+SOL_CFG = AssetConfig(
+    name="SOLANA (SOL/USD)", symbol="SOLUSD", yf_ticker="SOL-USD",
+    ccxt_symbol="SOL/USDT", asset_type="crypto",
+    pip_size=0.01, pip_value_per_lot=0.01, contract_size=1.0,
+    price_lo=5.0, price_hi=2000.0, is_24_7=True,
+    color="#9945FF", emoji="💜",
+    tick_size=0.01, tick_value=1.0, min_lot=0.1, max_lot=100.0, lot_step=0.1,
+    leverage=20, spread_pips=30.0, oanda_symbol=None
+)
+
 SPX_CFG = AssetConfig(
     name="S&P 500", symbol="SPX500", yf_ticker="^GSPC",
     ccxt_symbol=None, asset_type="index",
@@ -358,6 +378,16 @@ SPX_CFG = AssetConfig(
     color="#00BCD4", emoji="📊",
     tick_size=0.01, tick_value=5.0, min_lot=0.01, max_lot=10.0, lot_step=0.01,
     leverage=50, spread_pips=1.0, oanda_symbol="SPX500_USD"
+)
+
+NAS_CFG = AssetConfig(
+    name="NASDAQ 100", symbol="NAS100", yf_ticker="^NDX",
+    ccxt_symbol=None, asset_type="index",
+    pip_size=0.01, pip_value_per_lot=20.0, contract_size=10,
+    price_lo=1000.0, price_hi=50000.0, is_24_7=False,
+    color="#7C3AED", emoji="🚀",
+    tick_size=0.01, tick_value=2.0, min_lot=0.01, max_lot=10.0, lot_step=0.01,
+    leverage=50, spread_pips=1.5, oanda_symbol="NAS100_USD"
 )
 
 EURUSD_CFG = AssetConfig(
@@ -370,19 +400,49 @@ EURUSD_CFG = AssetConfig(
     leverage=100, spread_pips=1.5, oanda_symbol="EUR_USD"
 )
 
-ALL_ASSETS: List[AssetConfig] = [GOLD_CFG, BTC_CFG, ETH_CFG, SPX_CFG, EURUSD_CFG]
+GBPUSD_CFG = AssetConfig(
+    name="GBP/USD", symbol="GBPUSD", yf_ticker="GBPUSD=X",
+    ccxt_symbol=None, asset_type="forex",
+    pip_size=0.0001, pip_value_per_lot=10.0, contract_size=100000,
+    price_lo=0.80, price_hi=2.50, is_24_7=False,
+    color="#E91E63", emoji="💷",
+    tick_size=0.00001, tick_value=1.0, min_lot=0.01, max_lot=100.0, lot_step=0.01,
+    leverage=100, spread_pips=2.0, oanda_symbol="GBP_USD"
+)
+
+USDJPY_CFG = AssetConfig(
+    name="USD/JPY", symbol="USDJPY", yf_ticker="JPY=X",
+    ccxt_symbol=None, asset_type="forex",
+    pip_size=0.01, pip_value_per_lot=9.0, contract_size=100000,
+    price_lo=80.0, price_hi=200.0, is_24_7=False,
+    color="#FF5722", emoji="💴",
+    tick_size=0.001, tick_value=0.9, min_lot=0.01, max_lot=100.0, lot_step=0.01,
+    leverage=100, spread_pips=1.8, oanda_symbol="USD_JPY"
+)
+
+ALL_ASSETS: List[AssetConfig] = [
+    GOLD_CFG, SILVER_CFG, 
+    BTC_CFG, ETH_CFG, SOL_CFG, 
+    SPX_CFG, NAS_CFG,
+    EURUSD_CFG, GBPUSD_CFG, USDJPY_CFG
+]
 ASSET_MAP: Dict[str, AssetConfig] = {a.symbol: a for a in ALL_ASSETS}
 
 # ============================================
-# SECTION 4 — INSTRUMENT SPECIFICATIONS DATABASE (P0)
+# SECTION 4 — INSTRUMENT SPECIFICATIONS DATABASE (P0) — 10 ASSETS
 # ============================================
 
 INSTRUMENT_SPECS: Dict[str, InstrumentSpec] = {
     "XAUUSD": InstrumentSpec(symbol="XAUUSD", contract_size=100, tick_size=0.01, tick_value=1.0, pip_size=0.01, min_lot=0.01, max_lot=100.0, lot_step=0.01, leverage=100, spread_pips=3.0),
+    "XAGUSD": InstrumentSpec(symbol="XAGUSD", contract_size=5000, tick_size=0.001, tick_value=50.0, pip_size=0.01, min_lot=0.01, max_lot=100.0, lot_step=0.01, leverage=100, spread_pips=3.5),
     "BTCUSD": InstrumentSpec(symbol="BTCUSD", contract_size=1, tick_size=0.01, tick_value=1.0, pip_size=1.0, min_lot=0.001, max_lot=10.0, lot_step=0.001, leverage=20, spread_pips=50.0),
     "ETHUSD": InstrumentSpec(symbol="ETHUSD", contract_size=1, tick_size=0.01, tick_value=1.0, pip_size=0.01, min_lot=0.01, max_lot=50.0, lot_step=0.01, leverage=20, spread_pips=40.0),
-    "EURUSD": InstrumentSpec(symbol="EURUSD", contract_size=100000, tick_size=0.00001, tick_value=1.0, pip_size=0.0001, min_lot=0.01, max_lot=100.0, lot_step=0.01, leverage=100, spread_pips=1.5),
+    "SOLUSD": InstrumentSpec(symbol="SOLUSD", contract_size=1, tick_size=0.01, tick_value=1.0, pip_size=0.01, min_lot=0.1, max_lot=100.0, lot_step=0.1, leverage=20, spread_pips=30.0),
     "SPX500": InstrumentSpec(symbol="SPX500", contract_size=50, tick_size=0.01, tick_value=5.0, pip_size=0.01, min_lot=0.01, max_lot=10.0, lot_step=0.01, leverage=50, spread_pips=1.0),
+    "NAS100": InstrumentSpec(symbol="NAS100", contract_size=10, tick_size=0.01, tick_value=2.0, pip_size=0.01, min_lot=0.01, max_lot=10.0, lot_step=0.01, leverage=50, spread_pips=1.5),
+    "EURUSD": InstrumentSpec(symbol="EURUSD", contract_size=100000, tick_size=0.00001, tick_value=1.0, pip_size=0.0001, min_lot=0.01, max_lot=100.0, lot_step=0.01, leverage=100, spread_pips=1.5),
+    "GBPUSD": InstrumentSpec(symbol="GBPUSD", contract_size=100000, tick_size=0.00001, tick_value=1.0, pip_size=0.0001, min_lot=0.01, max_lot=100.0, lot_step=0.01, leverage=100, spread_pips=2.0),
+    "USDJPY": InstrumentSpec(symbol="USDJPY", contract_size=100000, tick_size=0.001, tick_value=0.9, pip_size=0.01, min_lot=0.01, max_lot=100.0, lot_step=0.01, leverage=100, spread_pips=1.8),
 }
 
 # ============================================
@@ -398,7 +458,12 @@ class PriceFeed:
         try:
             api_key = os.environ.get("TWELVE_DATA_API_KEY", "")
             if not api_key: return None
-            symbol_map = {"XAUUSD": "XAU/USD", "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY", "USDCHF": "USD/CHF", "BTCUSD": "BTC/USD", "ETHUSD": "ETH/USD", "SPX500": "SPX"}
+            symbol_map = {
+                "XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD",
+                "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY", "USDCHF": "USD/CHF", 
+                "BTCUSD": "BTC/USD", "ETHUSD": "ETH/USD", "SOLUSD": "SOL/USD",
+                "SPX500": "SPX", "NAS100": "NDX"
+            }
             td_symbol = symbol_map.get(symbol.upper(), symbol)
             response = requests.get("https://api.twelvedata.com/time_series", params={"symbol": td_symbol, "interval": interval, "outputsize": outputsize, "apikey": api_key, "format": "JSON"}, timeout=10)
             if response.status_code != 200:
@@ -425,7 +490,12 @@ class PriceFeed:
         try:
             api_key = os.environ.get("TWELVE_DATA_API_KEY", "")
             if not api_key: return None
-            symbol_map = {"XAUUSD": "XAU/USD", "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY", "USDCHF": "USD/CHF", "BTCUSD": "BTC/USD", "ETHUSD": "ETH/USD", "SPX500": "SPX"}
+            symbol_map = {
+                "XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD",
+                "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY", "USDCHF": "USD/CHF", 
+                "BTCUSD": "BTC/USD", "ETHUSD": "ETH/USD", "SOLUSD": "SOL/USD",
+                "SPX500": "SPX", "NAS100": "NDX"
+            }
             td_symbol = symbol_map.get(symbol.upper(), symbol)
             response = requests.get("https://api.twelvedata.com/price", params={"symbol": td_symbol, "apikey": api_key}, timeout=5)
             if response.status_code == 200:
@@ -834,7 +904,9 @@ class MathEngine:
     def _calc_cci(prices: np.ndarray, period: int = 14) -> float:
         if len(prices) < period: return 0.0
         tp = prices[-period:]
-        m, md = np.mean(tp), np.mean(np.abs(tp - m))
+        # FIXED: split into two lines to avoid UnboundLocalError
+        m = float(np.mean(tp))
+        md = float(np.mean(np.abs(tp - m)))
         return round((prices[-1] - m) / (0.015 * md), 2) if md else 0.0
 
     @staticmethod
@@ -1344,7 +1416,9 @@ class ConfluenceEngine:
         cur = float(closes[-1]); score, reasons = 0.0, []
         for ob in MathEngine._detect_obs(closes, cur):
             mid = (ob["high"] + ob["low"]) / 2.0
-            dist, prox = cur - mid, ConfluenceEngine.gauss_decay(abs(dist), atr * 2.0)
+            # FIXED: split into two lines to avoid UnboundLocalError
+            dist = cur - mid
+            prox = ConfluenceEngine.gauss_decay(abs(dist), atr * 2.0)
             w = min(ob["strength"], 100) / 100.0
             if ob["type"].startswith("BULLISH") and dist > 0:
                 score += 30 * w * prox
