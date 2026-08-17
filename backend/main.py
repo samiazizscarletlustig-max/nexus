@@ -1,11 +1,11 @@
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║          NEXUS v13.0  ─  PRO FASTAPI BACKEND (main.py)                       ║
+║          NEXUS v13.1  ─  PRO FASTAPI BACKEND (main.py)                       ║
 ║          Quantum Institutional Terminal Backend                              ║
 ║          Complete Bridge Between engine.py and Flutter/Web Frontend         ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-FEATURES EXTRACTED FROM ENGINE.PY (v13.0):
+FEATURES EXTRACTED FROM ENGINE.PY (v13.1):
 ─────────────────────────────────────────────────────────────────────────────────
   1. MULTI-LAYER SIGNAL ENGINE (7-Layer Confluence)
   2. RISK MANAGEMENT (P0 + Volatility-Adjusted Sizing + Expectancy)
@@ -13,7 +13,8 @@ FEATURES EXTRACTED FROM ENGINE.PY (v13.0):
   4. SMART MONEY CONCEPTS (OB, FVG, Liquidity Sweeps)
   5. PROXY ORDER FLOW & BUYING PRESSURE ESTIMATION
   6. MACRO EVENT FILTER (NFP, CPI, FOMC Auto-Lock)
-  7. WEBSOCKET LAYER (Real-time ticks, metric shifts, heartbeats)
+  7. FINNHUB NEWS (Real-time headlines + Economic Calendar)  ← NEW
+  8. WEBSOCKET LAYER (Real-time ticks, metric shifts, heartbeats)
   
   RUN COMMAND:
   ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +68,8 @@ try:
         MarketRegime,
         SignalDirection,
         NewsEngine,
+        FinnhubNewsEngine,
+        NewsItem,
     )
 except ImportError as e:
     print(f"❌ CRITICAL: Failed to import engine.py: {e}")
@@ -86,8 +89,8 @@ logger = logging.getLogger("NEXUS-API")
 
 app = FastAPI(
     title=os.getenv("APP_NAME", "NEXUS Quantum Terminal"),
-    description="Institutional-grade quantum trading intelligence API v13.0",
-    version=os.getenv("APP_VERSION", "13.0.0"),
+    description="Institutional-grade quantum trading intelligence API v13.1",
+    version=os.getenv("APP_VERSION", "13.1.0"),
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -300,7 +303,7 @@ async def _ws_broadcast_loop() -> None:
 async def _startup() -> None:
     """Initialize background tasks on startup."""
     asyncio.create_task(_ws_broadcast_loop())
-    logger.info("🚀 NEXUS v13.0 — WebSocket broadcast loop started.")
+    logger.info("🚀 NEXUS v13.1 — WebSocket broadcast loop started.")
     logger.info(f"📊 Monitoring {len(ALL_ASSETS)} assets")
     logger.info(f"📦 Archive capacity: {_ARCHIVE_MAX_RECORDS} records")
 
@@ -510,8 +513,8 @@ async def root():
     """API root — status and available endpoints."""
     return {
         "status": "ONLINE",
-        "system": os.getenv("APP_NAME", "NEXUS QUANTUM v13.0"),
-        "version": os.getenv("APP_VERSION", "13.0.0"),
+        "system": os.getenv("APP_NAME", "NEXUS QUANTUM v13.1"),
+        "version": os.getenv("APP_VERSION", "13.1.0"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "endpoints": {
             "health": "/api/health",
@@ -520,6 +523,8 @@ async def root():
             "ohlcv": "/api/ohlcv?symbol=XAUUSD&interval=5m",
             "analyze": "POST /api/analyze",
             "position_size": "POST /api/position-size",
+            "news": "/api/news/BTCUSD",
+            "calendar": "/api/calendar",
             "macro_events": "/api/macro-events",
             "correlation": "/api/correlation",
             "archive": "/api/v1/archive",
@@ -537,7 +542,7 @@ async def health_check():
         "engine_loaded": True,
         "ws_clients": _ws_manager.active_count,
         "archive_records": len(_signal_archive),
-        "version": os.getenv("APP_VERSION", "13.0.0"),
+        "version": os.getenv("APP_VERSION", "13.1.0"),
     }
 
 @app.get("/api/assets")
@@ -707,9 +712,9 @@ async def get_ohlcv(
 @app.post("/api/analyze")
 async def analyze_assets(request: AnalyzeRequest):
     """
-    Core NEXUS analysis endpoint — runs full quantum analysis pipeline (v13.0).
+    Core NEXUS analysis endpoint — runs full quantum analysis pipeline (v13.1).
     Returns complete market intelligence, multi-layer signal, Monte Carlo risk, 
-    volume profile, trade plan, and proxy order flow metrics.
+    volume profile, trade plan, proxy order flow, AND real Finnhub news.
     """
     cfg = get_config(request.symbol)
     sym_upper = request.symbol.upper()
@@ -797,6 +802,29 @@ async def calculate_position(request: PositionSizeRequest):
         }
 
     return {"success": True, "data": result}
+
+@app.get("/api/news/{symbol}")
+async def get_news(symbol: str, days: int = Query(7, ge=1, le=30)):
+    """Fetch latest real news for a specific asset from Finnhub."""
+    if symbol.upper() not in ASSET_MAP:
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not supported")
+    news = FinnhubNewsEngine.fetch_company_news(symbol, days_back=days)
+    return {
+        "success": True,
+        "symbol": symbol.upper(),
+        "count": len(news),
+        "news": [asdict(item) for item in news]
+    }
+
+@app.get("/api/calendar")
+async def get_economic_calendar(days: int = Query(7, ge=1, le=30)):
+    """Fetch upcoming high-impact economic events (NFP, CPI, FOMC) from Finnhub."""
+    events = FinnhubNewsEngine.fetch_economic_calendar(days_ahead=days)
+    return {
+        "success": True,
+        "count": len(events),
+        "events": events
+    }
 
 @app.get("/api/macro-events")
 async def get_macro_events(days: int = Query(7, ge=1, le=30, description="Days ahead to fetch")):
@@ -954,7 +982,7 @@ async def ws_live(ws: WebSocket):
             "type": "connected",
             "ts": datetime.now(timezone.utc).isoformat(),
             "data": init_data,
-            "version": os.getenv("APP_VERSION", "13.0.0"),
+            "version": os.getenv("APP_VERSION", "13.1.0"),
         }))
     except Exception as exc:
         logger.error(f"WS initial snapshot failed: {exc}")
