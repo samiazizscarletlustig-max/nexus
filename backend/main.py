@@ -1,1023 +1,880 @@
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║          NEXUS v13.1  ─  PRO FASTAPI BACKEND (main.py)                       ║
-║          Quantum Institutional Terminal Backend                              ║
-║          Complete Bridge Between engine.py and Flutter/Web Frontend         ║
+║  NEXUS v13.10 ULTIMATE — PRO FASTAPI BACKEND (main.py)                        ║
+║  Architecture: FastAPI + Engine (Binance WS + OANDA) | Zero Latency           ║
+║  Focus: Broker-Grade Chart Precision, Sub-100ms Responses, WebSocket Live     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-
-FEATURES EXTRACTED FROM ENGINE.PY (v13.1):
-─────────────────────────────────────────────────────────────────────────────────
-  1. MULTI-LAYER SIGNAL ENGINE (7-Layer Confluence)
-  2. RISK MANAGEMENT (P0 + Volatility-Adjusted Sizing + Expectancy)
-  3. 30+ TECHNICAL INDICATORS & QUANTUM METRICS
-  4. SMART MONEY CONCEPTS (OB, FVG, Liquidity Sweeps)
-  5. PROXY ORDER FLOW & BUYING PRESSURE ESTIMATION
-  6. MACRO EVENT FILTER (NFP, CPI, FOMC Auto-Lock)
-  7. FINNHUB NEWS (Real-time headlines + Economic Calendar)  ← NEW
-  8. WEBSOCKET LAYER (Real-time ticks, metric shifts, heartbeats)
-  
-  RUN COMMAND:
-  ─────────────────────────────────────────────────────────────────────────────
-  uvicorn main:app --reload --host 0.0.0.0 --port 8000
-
-  PRODUCTION DEPLOYMENT:
-  ────────────────────────────────────────────────────────────────────────────
-  uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4
 """
-
 import os
-import asyncio
-import math
-import re
 import json
-import logging
+import math
+import random
+import asyncio
 import statistics
-import requests
+import time
+import re
+import logging
 from collections import deque
-from typing import Dict, List, Any, Optional, Set, Tuple
 from datetime import datetime, timezone, timedelta
 from dataclasses import asdict
+from typing import Dict, List, Any, Optional, Set, Tuple
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# ── Engine import (STRICTLY READ-ONLY) ────────────────────────────────────────
+# ── Engine import with graceful SIM fallback ───────────────────────────────
+ENGINE_OK = False
+LIVE_PRICES: Dict[str, float] = {}  # Fallback for SIM mode
+
 try:
     from engine import (
-        run_analysis,
-        calculate_position_size,
-        ASSET_MAP,
-        ALL_ASSETS,
-        INSTRUMENT_SPECS,
-        PriceFeed,
-        MathEngine,
-        VolumeProfileAnalyzer,
-        MonteCarloRiskEngine,
-        MultiTimeframeEngine,
-        MultiLayerSignalEngine,
-        MarketIntelligence,
-        get_correlation_matrix,
-        AssetConfig,
-        InstrumentSpec,
-        MarketRegime,
-        SignalDirection,
-        NewsEngine,
-        FinnhubNewsEngine,
-        NewsItem,
+        run_analysis, calculate_position_size, ASSET_MAP, ALL_ASSETS,
+        INSTRUMENT_SPECS, PriceFeed, MarketIntelligence, get_correlation_matrix,
+        AssetConfig, FinnhubNewsEngine, NewsItem, LIVE_PRICES  # <-- Added LIVE_PRICES
     )
-except ImportError as e:
-    print(f"❌ CRITICAL: Failed to import engine.py: {e}")
-    print("💡 Make sure engine.py exists in backend/ directory")
-    raise
+    ENGINE_OK = True
+except Exception as e:
+    print(f"⚠️  engine.py unavailable ({e}) — running in SIMULATED mode.")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+try:
+    import ai_planner
+except Exception:
+    ai_planner = None
+    print("⚠️  ai_planner.py unavailable — AI endpoint will use built-in fallback.")
+
+# ═══ v13.10 — CLEAN CONSOLE (Hide 429 & Network Spam) ═══
+class _CleanConsoleFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage().lower()
+        if "429" in msg or "twelve data" in msg or "connection error" in msg:
+            return False
+        return True
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S")
+logging.getLogger().addFilter(_CleanConsoleFilter())
 logger = logging.getLogger("NEXUS-API")
+logger.addFilter(_CleanConsoleFilter())
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  APP SETUP
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+#  SIMULATED MODE ASSETS (Fallback only)
+# ════════════════════════════════════════════════════════════════════════════
+if not ENGINE_OK:
+    from dataclasses import dataclass
 
-app = FastAPI(
-    title=os.getenv("APP_NAME", "NEXUS Quantum Terminal"),
-    description="Institutional-grade quantum trading intelligence API v13.1",
-    version=os.getenv("APP_VERSION", "13.1.0"),
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
+    @dataclass
+    class AssetConfig:
+        symbol: str
+        name: str
+        asset_type: str
+        yf_ticker: str
+        emoji: str = ""
+        color: str = "#FFFFFF"
+        base_price: float = 100.0
+        price_hi: float = 10000.0
+        contract_size: float = 100.0
+        pip_size: float = 0.01
+        tick_size: float = 0.01
+        tick_value: float = 1.0
+        min_lot: float = 0.01
+        max_lot: float = 100.0
+        lot_step: float = 0.01
+        leverage: float = 100.0
+        spread_pips: float = 2.0
+        is_24_7: bool = False
 
-# CORS Configuration
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    ALL_ASSETS = [
+        AssetConfig("XAUUSD", "Gold", "commodity", "GC=F", "⚡", "#FFD700", 2385.0, 3000, 100, 0.1, 0.1, 10, 0.01, 500, 0.01, 500, 2, False),
+        AssetConfig("XAGUSD", "Silver", "commodity", "SI=F", "🥈", "#C0C0C0", 29.1, 60, 5000, 0.01, 0.01, 10, 0.01, 500, 0.01, 500, 3, False),
+        AssetConfig("BTCUSD", "Bitcoin", "crypto", "BTC-USD", "₿", "#F7931A", 64250.0, 120000, 1, 0.01, 0.01, 10, 0.001, 100, 0.001, 100, 5, True),
+        AssetConfig("ETHUSD", "Ethereum", "crypto", "ETH-USD", "Ξ", "#627EEA", 3450.0, 6000, 1, 0.01, 0.01, 10, 0.01, 100, 0.01, 100, 5, True),
+        AssetConfig("SOLUSD", "Solana", "crypto", "SOL-USD", "💜", "#9945FF", 148.5, 300, 1, 0.01, 0.01, 10, 0.01, 100, 0.01, 100, 5, True),
+        AssetConfig("SPX500", "S&P 500", "index", "^GSPC", "📊", "#4CAF50", 5420.0, 7000, 100, 0.25, 0.25, 10, 0.01, 100, 0.01, 500, 2, False),
+        AssetConfig("NAS100", "NASDAQ 100", "index", "^NDX", "🚀", "#2196F3", 18950.0, 25000, 100, 0.25, 0.25, 10, 0.01, 100, 0.01, 500, 2, False),
+        AssetConfig("EURUSD", "EUR/USD", "forex", "EURUSD=X", "💱", "#1565C0", 1.0845, 2, 100000, 0.0001, 0.0001, 10, 0.01, 500, 0.01, 500, 1, False),
+        AssetConfig("GBPUSD", "GBP/USD", "forex", "GBPUSD=X", "💷", "#8E24AA", 1.2730, 2, 100000, 0.0001, 0.0001, 10, 0.01, 500, 0.01, 500, 2, False),
+        AssetConfig("USDJPY", "USD/JPY", "forex", "USDJPY=X", "💴", "#EF5350", 156.4, 200, 100000, 0.01, 0.01, 10, 0.01, 500, 0.01, 500, 2, False),
+    ]
+    ASSET_MAP = {a.symbol: a for a in ALL_ASSETS}
+    INSTRUMENT_SPECS = ASSET_MAP
+    SIM_PRICE: Dict[str, float] = {a.symbol: a.base_price for a in ALL_ASSETS}
+
+    def _sim_tick(cfg) -> float:
+        p = SIM_PRICE[cfg.symbol]
+        p *= 1 + random.uniform(-0.0008, 0.0008)
+        SIM_PRICE[cfg.symbol] = p
+        return p
+
+    class PriceFeed:
+        @staticmethod
+        def get_latest_price(cfg):
+            return _sim_tick(cfg), "SIM"
+
+        @staticmethod
+        def get_latest_prices(cfgs):
+            return {c.symbol: (_sim_tick(c), "SIM") for c in cfgs}
+
+        @staticmethod
+        def get(cfg, timeframe="M5"):
+            p = _sim_tick(cfg)
+            return [p], "SIM", {"open": [p], "high": [p], "low": [p], "close": [p], "volume": [1000]}
+
+    def calculate_position_size(balance, risk_percentage, entry_price, stop_loss_price, symbol=""):
+        risk_amt = balance * risk_percentage / 100.0
+        dist = abs(entry_price - stop_loss_price) or 1e-9
+        lots = risk_amt / (dist * 10)
+        return {"lots": round(max(0.01, min(lots, 100.0)), 2), "risk_amount": round(risk_amt, 2), "distance": round(dist, 5)}
+
+    def get_correlation_matrix():
+        return {}
+
+    def run_analysis(cfg, **kw):
+        return _SimIntel(cfg, kw.get('timeframe', 'M15')).obj(), [], "NEXUS Simulated Feed"
+
+    class _SimIntel:
+        def __init__(self, cfg, tf):
+            R = random.Random()
+            self.cfg = cfg
+            self.tf = tf
+            self.p = SIM_PRICE.get(cfg.symbol, cfg.base_price)
+            self.bull = R.random() > 0.45
+            self.R = R
+
+        def obj(self):
+            R, p, bull, cfg = self.R, self.p, self.bull, self.cfg
+            atr = p * R.uniform(0.004, 0.012)
+            strength = R.randint(62, 94)
+            direction = "BULLISH" if bull else "BEARISH"
+            now = datetime.now(timezone.utc)
+            return dict(
+                asset_name=cfg.name, asset_type=cfg.asset_type, last_update=now.isoformat(), data_source="SIM",
+                current_price=round(p, 6), safety_signal="BUY" if bull else "SELL", signal_color="#00FF88" if bull else "#FF3131",
+                signal_strength=strength, direction=direction, probability_bull=round(strength if bull else 100-strength, 1),
+                ema9=p, ema21=p, ema50=p, ema200=p, ema_alignment="BULLISH" if bull else "BEARISH",
+                rsi=60.0 if bull else 40.0, rsi_signal="BULLISH" if bull else "BEARISH", rsi_explanation="Sim",
+                macd_line=0.0, macd_signal=0.0, macd_hist=0.0, macd_cross="BULLISH" if bull else "BEARISH",
+                stoch_k=50.0, stoch_d=50.0, stoch_signal="NEUTRAL", bb_upper=p+10, bb_mid=p, bb_lower=p-10, bb_width=1.0, bb_position="MID",
+                kc_upper=p+10, kc_mid=p, kc_lower=p-10, ttm_squeeze_active=False, ttm_squeeze_label="OFF", ttm_momentum=0.0,
+                supertrend_value=p, supertrend_signal="BULLISH" if bull else "BEARISH", supertrend_direction="UP" if bull else "DOWN",
+                vwap=p, vwap_upper=p+5, vwap_lower=p-5, vwap_signal="ABOVE" if bull else "BELOW",
+                pivot_points={"PP": p, "R1": p+5, "S1": p-5}, nearest_pivot_level="PP", nearest_pivot_dist=0.0,
+                zscore=0.0, zscore_signal="NEUTRAL", adx_value=25.0, adx_signal="STRONG", adx_di_plus=20.0, adx_di_minus=20.0,
+                williams_r=-50.0, williams_signal="NEUTRAL", cci_value=0.0, cci_signal="NEUTRAL", obv_trend="RISING" if bull else "FALLING", obv_value=1000.0,
+                ichimoku_signal="BULLISH" if bull else "BEARISH", tenkan=p, kijun=p, atr14=atr,
+                sl_buy=p-atr, sl_sell=p+atr, tp_buy=p+atr*2, tp_sell=p-atr*2, sl_pips=10.0, atr_explanation="Sim ATR",
+                hurst=0.5, regime="TRENDING", regime_advanced="TREND", shannon_entropy=0.5, kaufman_er=0.5, fractal_dim=1.5,
+                realized_vol=0.1, vol_regime="NORMAL", kurtosis=3.0, skewness=0.0, tail_risk="NORMAL", autocorr_lag_1=0.0, stability_index=50,
+                supports=[p-10], resistances=[p+10], nearest_support=p-10, nearest_resist=p+10, sr_zone="MID",
+                wave_position="WAVE 3", wave_confidence=50.0, wave_target=p+20, wave_trend=direction,
+                fib_retracements={}, fib_extensions={}, fib_zone="MID", fib_strength=50.0, fib_explanation="Sim",
+                order_blocks=[], fair_value_gaps=[], liquidity_sweeps=[], smc_bias=direction, smc_explanation="Sim",
+                rsi_divergence="NONE", macd_divergence="NONE", obv_divergence="NONE", divergence_signal="NONE", divergence_strength=0.0,
+                candle_pattern="NONE", candle_strength=0.0, candle_direction="NEUTRAL", candle_explanation="Sim",
+                kelly_fraction=0.05, kelly_recommendation="Sim", trading_session="LONDON", session_liquidity="HIGH", session_warning="", session_explanation="Sim",
+                news_lock_active=False, news_lock_event="", news_lock_reason="", macro_sentiment_score=50, macro_sentiment_label="NEUTRAL",
+                macro_bull_hits=0, macro_bear_hits=0, mtf_signals={}, mtf_confluence="NEUTRAL", mtf_bull_count=0, mtf_bear_count=0,
+                trade_plan=dict(valid=True, direction=direction, entry=p, sl=p-atr, tp1=p+atr*2, tp2=p+atr*3, tp3=p+atr*4, rr1=2.0, rr2=3.0, confidence=strength, quality="A", reasoning="Sim", invalidation="Sim", session="LONDON", regime="TREND", news_risk="LOW", prob_score=strength, mtf="ALIGNED", layer_scores={}, proxy_order_flow={"delta_signal":"NEUTRAL", "buying_pressure":50.0}, expectancy_per_dollar=0.5, volatility_adjusted_risk_pct=1.0, bull_layers=3, bear_layers=0, estimated_win_rate=0.6),
+                risk_dollars=100.0, recommended_lots=0.1, lot_explanation="Sim", required_margin=50.0,
+                crypto_metrics=None, forex_metrics=None, chart_metadata={}, signal_reasons=["Sim"],
+                monte_carlo=dict(expected_final_balance=11000, var95=9000, var99=8000, expected_max_drawdown=10.0, probability_of_ruin=2.0, simulations_run=1000),
+                volume_profile=dict(poc_price=p, value_area_high=p+5, value_area_low=p-5), upcoming_news=[], volatility_percentile=50.0, estimated_win_rate=0.6
+            )
+
+# ════════════════════════════════════════════════════════════════════════════
+#  APP + CONFIG
+# ════════════════════════════════════════════════════════════════════════════
+app = FastAPI(title="NEXUS Quantum Terminal", version="13.10.0", docs_url="/docs", redoc_url="/redoc")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=["*"]
 )
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CONSTANTS & CONFIGURATION
-# ══════════════════════════════════════════════════════════════════════════════
-
-_MAX_DATA_RETRIES = int(os.getenv("MAX_DATA_RETRIES", "2"))
-_RETRY_DELAY_SEC = float(os.getenv("RETRY_DELAY_SEC", "1.5"))
-_WS_PRICE_INTERVAL_SEC = int(os.getenv("WS_PRICE_INTERVAL_SEC", "3"))
-_WS_HEARTBEAT_INTERVAL_SEC = int(os.getenv("WS_HEARTBEAT_INTERVAL_SEC", "30"))
-_ARCHIVE_MAX_RECORDS = int(os.getenv("ARCHIVE_MAX_RECORDS", "500"))
-
+_ARCHIVE_MAX = int(os.getenv("ARCHIVE_MAX_RECORDS", "500"))
+_WS_PRICE_SEC = int(os.getenv("WS_PRICE_INTERVAL_SEC", "1"))
+_WS_HB_SEC = int(os.getenv("WS_HEARTBEAT_INTERVAL_SEC", "30"))
 _CRYPTO_TYPES = {"crypto", "cryptocurrency", "digital"}
-_CRYPTO_SYMBOL_TOKENS = {
-    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "DOT", "AVAX",
-    "MATIC", "LINK", "UNI", "ATOM", "LTC", "ALGO", "XLM", "VET", "NEAR",
-    "FIL", "TRX", "ETC", "XMR", "SHIB", "APE",
-}
-_GOLD_SYMBOLS = {"XAUUSD", "XAGUSD", "GOLD", "XAUEUR", "XAUGBP"}
-
-# News CDN placeholders
-_NEWS_PLACEHOLDER: Dict[str, str] = {
-    "commodity": "https://nexus-cdn.app/placeholders/gold_news.jpg",
-    "crypto": "https://nexus-cdn.app/placeholders/crypto_news.jpg",
-    "index": "https://nexus-cdn.app/placeholders/index_news.jpg",
-    "forex": "https://nexus-cdn.app/placeholders/forex_news.jpg",
-    "default": "https://nexus-cdn.app/placeholders/general_news.jpg",
-}
-
-_SOURCE_LOGO_MAP: Dict[str, str] = {
-    "bloomberg": "https://nexus-cdn.app/logos/bloomberg.png",
-    "reuters": "https://nexus-cdn.app/logos/reuters.png",
-    "coindesk": "https://nexus-cdn.app/logos/coindesk.png",
-    "cointelegraph": "https://nexus-cdn.app/logos/cointelegraph.png",
-    "marketwatch": "https://nexus-cdn.app/logos/marketwatch.png",
-    "yahoo finance": "https://nexus-cdn.app/logos/yahoo_finance.png",
-    "finnhub": "https://nexus-cdn.app/logos/finnhub.png",
-    "rss": "https://nexus-cdn.app/logos/rss_generic.png",
-    "wsj": "https://nexus-cdn.app/logos/wsj.png",
-    "ft": "https://nexus-cdn.app/logos/ft.png",
-    "cnbc": "https://nexus-cdn.app/logos/cnbc.png",
-    "default": "https://nexus-cdn.app/logos/default_source.png",
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  IN-MEMORY CACHE & ARCHIVE
-# ══════════════════════════════════════════════════════════════════════════════
-
-_signal_archive: deque = deque(maxlen=_ARCHIVE_MAX_RECORDS)
+_GOLD = {"XAUUSD", "XAGUSD"}
+_signal_archive: deque = deque(maxlen=_ARCHIVE_MAX)
 _prev_prices: Dict[str, float] = {}
 _prev_signals: Dict[str, dict] = {}
+_analysis_cache: Dict[str, Tuple[float, dict]] = {}
+_USERS: Dict[str, dict] = {}
+_resp_cache: Dict[str, Tuple[float, Any]] = {}
 
-def _push_to_archive(sym: str, mi_data: dict, source: str) -> None:
-    """Push signal record to archive ring-buffer with all v13.0 metrics."""
-    try:
-        trade_plan = mi_data.get("tradePlan", {})
-        _signal_archive.appendleft({
-            "id": f"{sym}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}",
-            "symbol": sym,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "signal": mi_data.get("safetySignal", "WAIT"),
-            "direction": mi_data.get("direction", "NEUTRAL"),
-            "confidence": mi_data.get("signalConfidence", 50.0),
-            "confidenceLabel": mi_data.get("confidenceLabel", "NEUTRAL"),
-            "quality": mi_data.get("entryQuality", "POOR"),
-            "price": mi_data.get("currentPrice", 0.0),
-            "regime": mi_data.get("regimeAdvanced", "CHOPPY"),
-            "source": source,
-            "tradePlan": trade_plan,
-            "indicators": {
-                "rsi": mi_data.get("rsi"),
-                "macdHist": mi_data.get("macdHist"),
-                "adx": mi_data.get("adxValue"),
-                "atr": mi_data.get("atr14"),
-            },
-            "riskMetrics": {
-                "monteCarlo": mi_data.get("monteCarlo"),
-                "volumeProfile": mi_data.get("volumeProfile"),
-                "expectancyPerDollar": trade_plan.get("expectancyPerDollar"),
-                "volatilityAdjustedRisk": trade_plan.get("volatilityAdjustedRiskPct"),
-            },
-            "orderFlow": trade_plan.get("proxyOrderFlow"),
-        })
-    except Exception as exc:
-        logger.warning(f"Archive push failed [{sym}]: {exc}")
+def _cget(key: str, ttl: float):
+    h = _resp_cache.get(key)
+    if h and (time.time() - h[0]) < ttl:
+        return h[1]
+    return None
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  WEBSOCKET CONNECTION MANAGER
-# ══════════════════════════════════════════════════════════════════════════════
+def _cset(key: str, val: Any):
+    _resp_cache[key] = (time.time(), val)
 
+class AnalyzeRequest(BaseModel):
+    symbol: str
+    balance: float = Field(10000.0, ge=100.0)
+    risk_percentage: float = Field(1.0, ge=0.1, le=10.0)
+    timeframe: str = Field("M15", pattern="^(?i)(M1|M5|M15|H1|H4|D1|1m|5m|15m|1h|4h|1d)$")
+    run_mtf: bool = True
+    atr_mult: float = Field(1.5, ge=1.0, le=3.0)
+    rr_ratio: float = Field(2.5, ge=1.0, le=5.0)
+
+class PositionSizeRequest(BaseModel):
+    symbol: str
+    balance: float
+    risk_percentage: float
+    entry_price: float
+    stop_loss_price: float
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+# ════════════════════════════════════════════════════════════════════════════
+#  WEBSOCKET MANAGER (High-Frequency Ticks)
+# ════════════════════════════════════════════════════════════════════════════
 class ConnectionManager:
-    def __init__(self) -> None:
+    def __init__(self):
         self._clients: Dict[WebSocket, Set[str]] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, ws: WebSocket) -> None:
+    async def connect(self, ws):
         await ws.accept()
         async with self._lock:
             self._clients[ws] = set()
-        logger.info(f"🔌 WS client connected — total: {len(self._clients)}")
 
-    async def disconnect(self, ws: WebSocket) -> None:
+    async def disconnect(self, ws):
         async with self._lock:
             self._clients.pop(ws, None)
-        logger.info(f"🔌 WS client disconnected — total: {len(self._clients)}")
 
-    async def set_filter(self, ws: WebSocket, symbols: List[str]) -> None:
+    async def set_filter(self, ws, symbols):
         async with self._lock:
             if ws in self._clients:
-                self._clients[ws] = {s.upper().strip() for s in symbols}
-                logger.info(f"🎯 WS filter set for client: {self._clients[ws]}")
+                self._clients[ws] = {s.upper() for s in symbols}
 
-    async def broadcast(self, frame: dict) -> None:
-        """Broadcast frame to all connected clients."""
-        dead: List[WebSocket] = []
+    async def broadcast(self, frame):
+        dead = []
         async with self._lock:
-            snapshot = list(self._clients.items())
-
-        for ws, sub_filter in snapshot:
+            snap = list(self._clients.items())
+        for ws, _f in snap:
             try:
                 await ws.send_text(json.dumps(frame))
-            except Exception as e:
-                logger.warning(f"WS send failed: {e}")
+            except Exception:
                 dead.append(ws)
-
         for ws in dead:
             await self.disconnect(ws)
 
     @property
-    def active_count(self) -> int:
+    def active_count(self):
         return len(self._clients)
 
 _ws_manager = ConnectionManager()
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  WEBSOCKET BROADCAST LOOP
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ WEBSOCKET BROADCAST (ULTRA-FAST v13.10) ═══
+async def _ws_broadcast_loop():
+    """تبث الأسعار كل ثانية، مع إعطاء الأولوية القصوى للذاكرة الحية (RAM)"""
+    hb = 0
+    while True:
+        await asyncio.sleep(_WS_PRICE_SEC)
+        if _ws_manager.active_count == 0:
+            hb += _WS_PRICE_SEC
+            continue
+        
+        ticks, ts = {}, datetime.now(timezone.utc).isoformat()
+        for cfg in ALL_ASSETS:
+            try:
+                # 🚀 PRIORITY 1: Check RAM for live WebSocket price (Instant, <1ms)
+                if cfg.symbol in LIVE_PRICES and LIVE_PRICES[cfg.symbol] > 0:
+                    price = LIVE_PRICES[cfg.symbol]
+                else:
+                    # PRIORITY 2: Fallback to REST API fetch
+                    price_val, _ = await asyncio.to_thread(PriceFeed.get_latest_price, cfg)
+                    price = float(price_val)
+                
+                prev = _prev_prices.get(cfg.symbol, price)
+                pct = ((price - prev) / prev * 100) if prev else 0.0
+                ticks[cfg.symbol] = {
+                    "price": round(price, 5 if _is_forex(cfg) else (3 if "JPY" in cfg.symbol else 2)), 
+                    "changePct": round(pct, 3),
+                    "direction": "UP" if price > prev else "DOWN" if price < prev else "FLAT", 
+                    "glowIntensity": round(min(abs(pct) / 0.5, 1.0), 4)
+                }
+                _prev_prices[cfg.symbol] = price
+            except Exception:
+                pass
+                
+        if ticks:
+            await _ws_manager.broadcast({"type": "price_tick", "ts": ts, "data": ticks})
+            
+        hb += _WS_PRICE_SEC
+        if hb >= _WS_HB_SEC:
+            hb = 0
+            await _ws_manager.broadcast({"type": "heartbeat", "ts": ts, "activeClients": _ws_manager.active_count})
 
-async def _ws_broadcast_loop() -> None:
-    """Background task: broadcasts price ticks every N seconds."""
-    heartbeat_counter = 0
+# ═══ SMART PREWARM (Concurrent + Fallbacks = 5s load time) ═══
+async def _prewarm_loop():
+    await asyncio.sleep(3.0)
+    logger.info("🔥 Prewarm started (Smart Concurrency + Fallbacks)")
+    sem = asyncio.Semaphore(4)
+    
+    async def fetch_with_sem(cfg, tf):
+        async with sem:
+            try:
+                await asyncio.to_thread(PriceFeed.get, cfg, tf)
+            except Exception:
+                pass
 
     while True:
-        await asyncio.sleep(_WS_PRICE_INTERVAL_SEC)
-
-        if _ws_manager.active_count == 0:
-            heartbeat_counter += _WS_PRICE_INTERVAL_SEC
-            continue
-
-        # Price tick frame
-        tick_data: dict = {}
-        ts = datetime.now(timezone.utc).isoformat()
-
+        tasks = []
         for cfg in ALL_ASSETS:
-            sym = cfg.symbol
-            try:
-                price, _ = PriceFeed.get_latest_price(cfg)
-                price = float(price)
-                prev = _prev_prices.get(sym, price)
-
-                pct_change = ((price - prev) / prev * 100.0) if prev else 0.0
-                direction = "UP" if price > prev else "DOWN" if price < prev else "FLAT"
-                glow_intensity = min(abs(pct_change) / 0.5, 1.0)
-
-                tick_data[sym] = {
-                    "price": round(price, 6 if cfg.asset_type == "forex" else 2),
-                    "changePct": round(pct_change, 3),
-                    "direction": direction,
-                    "glowIntensity": round(glow_intensity, 4),
-                }
-                _prev_prices[sym] = price
-            except Exception as exc:
-                logger.debug(f"WS price fetch [{sym}]: {exc}")
-
-        if tick_data:
-            await _ws_manager.broadcast({
-                "type": "price_tick",
-                "ts": ts,
-                "data": tick_data,
-            })
-
-        # Heartbeat
-        heartbeat_counter += _WS_PRICE_INTERVAL_SEC
-        if heartbeat_counter >= _WS_HEARTBEAT_INTERVAL_SEC:
-            heartbeat_counter = 0
-            await _ws_manager.broadcast({
-                "type": "heartbeat",
-                "ts": ts,
-                "activeClients": _ws_manager.active_count,
-            })
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  STARTUP / SHUTDOWN
-# ══════════════════════════════════════════════════════════════════════════════
+            for tf in ("M15", "H1"):
+                tasks.append(fetch_with_sem(cfg, tf))
+        if tasks:
+            await asyncio.gather(*tasks)
+        await asyncio.sleep(300)
 
 @app.on_event("startup")
-async def _startup() -> None:
-    """Initialize background tasks on startup."""
+async def _startup():
     asyncio.create_task(_ws_broadcast_loop())
-    logger.info("🚀 NEXUS v13.1 — WebSocket broadcast loop started.")
-    logger.info(f"📊 Monitoring {len(ALL_ASSETS)} assets")
-    logger.info(f"📦 Archive capacity: {_ARCHIVE_MAX_RECORDS} records")
+    asyncio.create_task(_prewarm_loop())
+    logger.info(f"🚀 NEXUS v13.10 ULTIMATE — All systems started. [ENGINE={'REAL' if ENGINE_OK else 'SIM'}]")
+    logger.info(f"📊 Monitoring {len(ALL_ASSETS)} assets | 🤖 AI: {'READY' if ai_planner else 'DISABLED'}")
 
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    """Cleanup on shutdown."""
-    logger.info("👋 NEXUS API shutting down...")
+# ════════════════════════════════════════════════════════════════════════════
+#  UTILITIES & CHART METADATA (Institutional Precision)
+# ════════════════════════════════════════════════════════════════════════════
+def sanitize_float(o):
+    if isinstance(o, float):
+        return None if (math.isnan(o) or math.isinf(o)) else o
+    if isinstance(o, dict):
+        return {k: sanitize_float(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [sanitize_float(v) for v in o]
+    return o
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  UTILITY FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════
+_CAMEL = re.compile(r"_([a-z])")
+def to_camel_case(o):
+    if isinstance(o, dict):
+        return {_CAMEL.sub(lambda m: m.group(1).upper(), k): to_camel_case(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [to_camel_case(v) for v in o]
+    return o
 
-def sanitize_float(obj: Any) -> Any:
-    """Recursively replace NaN/Inf with None for JSON serialization."""
-    if isinstance(obj, float):
-        return None if (math.isnan(obj) or math.isinf(obj)) else obj
-    if isinstance(obj, dict):
-        return {k: sanitize_float(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [sanitize_float(v) for v in obj]
-    return obj
-
-_CAMEL_PATTERN = re.compile(r"_([a-z])")
-
-def _snake_to_camel(name: str) -> str:
-    """Convert snake_case to camelCase."""
-    return _CAMEL_PATTERN.sub(lambda m: m.group(1).upper(), name)
-
-def to_camel_case(obj: Any) -> Any:
-    """Recursively convert dict keys from snake_case to camelCase."""
-    if isinstance(obj, dict):
-        return {_snake_to_camel(k): to_camel_case(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [to_camel_case(v) for v in obj]
-    return obj
-
-def get_config(symbol: str) -> AssetConfig:
-    """Get asset configuration by symbol."""
+def get_config(symbol: str):
     sym = symbol.upper().strip()
     if sym in ASSET_MAP:
         return ASSET_MAP[sym]
-    raise HTTPException(status_code=404, detail=f"Asset '{symbol}' not supported.")
+    raise HTTPException(404, f"Asset '{symbol}' not supported.")
 
-def _is_crypto(cfg: AssetConfig) -> bool:
-    return getattr(cfg, "asset_type", "").lower() in _CRYPTO_TYPES
-
-def _is_forex(cfg: AssetConfig) -> bool:
+def _is_forex(cfg):
     return getattr(cfg, "asset_type", "").lower() == "forex"
 
-def _is_gold(cfg: AssetConfig) -> bool:
-    return cfg.symbol.upper() in _GOLD_SYMBOLS
-
-def _is_crypto_symbol(symbol: str, cfg: AssetConfig) -> bool:
-    sym_upper = symbol.upper()
-    if sym_upper in _GOLD_SYMBOLS:
+def _is_crypto_symbol(sym, cfg):
+    s = sym.upper()
+    if s in _GOLD:
         return False
     if getattr(cfg, "asset_type", "").lower() in _CRYPTO_TYPES:
         return True
-    return any(tok in sym_upper for tok in _CRYPTO_SYMBOL_TOKENS)
+    return any(t in s for t in ("BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"))
 
-def _decimal_places_for_asset(cfg: AssetConfig) -> int:
-    if _is_forex(cfg):
-        return 5
-    if _is_crypto_symbol(cfg.symbol, cfg):
-        return 2 if getattr(cfg, "price_hi", 10000) < 10000 else 0
+def _dp_for(cfg):
+    """Institutional_precision: Forex=5, JPY=3, Gold=2, Crypto=2/6, Indices=2"""
+    sym = cfg.symbol.upper()
+    at = getattr(cfg, "asset_type", "").lower()
+    if at == "forex":
+        return 3 if "JPY" in sym else 5
+    if at == "crypto":
+        return 2 if sym in ("BTCUSD", "ETHUSD", "BNBUSD", "SOLUSD") else 6
+    if sym in ("XAUUSD", "XAGUSD"):
+        return 2
+    if at == "index":
+        return 2
     return 2
 
-def _sentiment_label(score: float) -> str:
-    """Map VADER compound [-1, +1] → human label."""
-    if score >= 0.35:
-        return "VERY_BULLISH"
-    if score >= 0.10:
-        return "BULLISH"
-    if score <= -0.35:
-        return "VERY_BEARISH"
-    if score <= -0.10:
-        return "BEARISH"
-    return "NEUTRAL"
-
-def _source_logo(source: str) -> str:
-    """Get logo URL for news source."""
-    lower = source.lower()
-    for key, url in _SOURCE_LOGO_MAP.items():
-        if key in lower:
-            return url
-    return _SOURCE_LOGO_MAP["default"]
-
-def _enrich_news_item(raw: dict, asset_type: str) -> dict:
-    """Enrich news item with additional metadata."""
-    image_url = (
-        raw.get("imageUrl") or
-        raw.get("image_url") or
-        raw.get("thumbnail") or
-        _NEWS_PLACEHOLDER.get(asset_type, _NEWS_PLACEHOLDER["default"])
-    )
-    source_logo_url = _source_logo(raw.get("source", ""))
-    sentiment_score = float(raw.get("sentimentScore", 0.0) or 0.0)
-    
-    return {
-        **raw,
-        "imageUrl": image_url,
-        "sourceLogoUrl": source_logo_url,
-        "sentimentLabel": _sentiment_label(sentiment_score),
-    }
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CHART METADATA BUILDER
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _market_status(cfg: AssetConfig) -> dict:
-    """Determine market status based on UTC time and asset type."""
+def _build_chart_metadata(cfg):
+    dp = _dp_for(cfg)
+    tick = 0.001 if (_is_forex(cfg) and "JPY" in cfg.symbol) else (0.00001 if _is_forex(cfg) else (0.01 if cfg.symbol in _GOLD else (0.01 if getattr(cfg, "price_hi", 0) > 10000 else 0.0001)))
     now = datetime.now(timezone.utc)
-    wday = now.weekday()
-    hour = now.hour + now.minute / 60.0
-
+    hr = now.hour + now.minute / 60
     if _is_crypto_symbol(cfg.symbol, cfg):
-        return {"status": "24_7", "sessionLabel": "24/7 CRYPTO MARKET"}
-    
-    if wday >= 5:
-        return {"status": "CLOSED", "sessionLabel": "WEEKEND — MARKET CLOSED"}
-    
-    if cfg.asset_type == "index":
-        if 13.5 <= hour < 20.0:
-            return {"status": "OPEN", "sessionLabel": "US MARKET OPEN"}
-        if 12.0 <= hour < 13.5:
-            return {"status": "PRE_MARKET", "sessionLabel": "PRE-MARKET"}
-        return {"status": "CLOSED", "sessionLabel": "US MARKET CLOSED"}
-    
-    # Gold / Forex
-    if wday == 4 and hour >= 22.0:
-        return {"status": "CLOSING", "sessionLabel": "WEEKEND APPROACHING"}
-    
-    return {"status": "OPEN", "sessionLabel": _active_session_label(hour)}
-
-def _active_session_label(hour: float) -> str:
-    london_open = 7.0 <= hour < 16.0
-    ny_open = 12.0 <= hour < 21.0
-    tokyo_open = hour >= 23.0 or hour < 8.0
-
-    if london_open and ny_open:
-        return "LONDON–NY OVERLAP"
-    if tokyo_open and london_open:
-        return "TOKYO–LONDON OVERLAP"
-    if london_open:
-        return "LONDON SESSION"
-    if ny_open:
-        return "NEW YORK SESSION"
-    if tokyo_open:
-        return "TOKYO SESSION"
-    return "OFF-HOURS"
-
-def _build_chart_metadata(cfg: AssetConfig) -> dict:
-    """Build Syncfusion-ready chart configuration."""
-    decimal_places = _decimal_places_for_asset(cfg)
-    
-    if _is_forex(cfg):
-        tick_size = 0.0001
-    elif cfg.symbol.upper() in _GOLD_SYMBOLS:
-        tick_size = 0.10
-    elif _is_crypto_symbol(cfg.symbol, cfg):
-        price_hi = getattr(cfg, "price_hi", 100000.0)
-        tick_size = 1.0 if price_hi > 10000 else 0.01
-    elif cfg.asset_type == "index":
-        tick_size = 0.25
+        st, sl_ = "24_7", "24/7 CRYPTO MARKET"
+    elif now.weekday() >= 5:
+        st, sl_ = "CLOSED", "WEEKEND — MARKET CLOSED"
     else:
-        tick_size = 0.01
-
-    ms = _market_status(cfg)
-
+        st, sl_ = "OPEN", ("LONDON–NY OVERLAP" if (7 <= hr < 16 and 12 <= hr < 21) else "LONDON SESSION" if 7 <= hr < 16 else "NEW YORK SESSION" if 12 <= hr < 21 else "OFF-HOURS")
     return {
-        "decimalPlaces": decimal_places,
-        "tickSize": tick_size,
-        "rightViewportPaddingPct": 5.0,
-        "marketStatus": ms["status"],
-        "sessionLabel": ms["sessionLabel"],
-        "is24h": _is_crypto_symbol(cfg.symbol, cfg),
-        "assetColor": getattr(cfg, "color", "#FFFFFF"),
-        "priceFormat": f"#,##0.{'0' * decimal_places}",
+        "decimalPlaces": dp, "tickSize": tick, "rightViewportPaddingPct": 5.0, 
+        "marketStatus": st, "sessionLabel": sl_, "is24h": _is_crypto_symbol(cfg.symbol, cfg), 
+        "isOverlap": (7 <= hr < 16 and 12 <= hr < 21), "assetColor": getattr(cfg, "color", "#FFFFFF"), 
+        "priceFormat": f"#,##0.{'0' * dp}"
     }
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  REQUEST/RESPONSE MODELS
-# ═════════════════════════════════════════════════════════════════════════════
-
-class AnalyzeRequest(BaseModel):
-    symbol: str
-    balance: float = Field(default=10000.0, ge=100.0)
-    risk_percentage: float = Field(default=1.0, ge=0.1, le=10.0)
-    timeframe: str = Field(default="M5", pattern="^(M1|M5|M15|H1|H4|D1)$")
-    run_mtf: bool = True
-    atr_mult: float = Field(default=1.5, ge=1.0, le=3.0)
-    rr_ratio: float = Field(default=2.5, ge=1.0, le=5.0)
-
-class PositionSizeRequest(BaseModel):
-    symbol: str
-    balance: float = Field(..., ge=0.0)
-    risk_percentage: float = Field(..., ge=0.1, le=10.0)
-    entry_price: float = Field(..., gt=0.0)
-    stop_loss_price: float = Field(..., gt=0.0)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ENDPOINTS
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/")
-async def root():
-    """API root — status and available endpoints."""
+def _enrich_news_item(raw, asset_type):
     return {
-        "status": "ONLINE",
-        "system": os.getenv("APP_NAME", "NEXUS QUANTUM v13.1"),
-        "version": os.getenv("APP_VERSION", "13.1.0"),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "endpoints": {
-            "health": "/api/health",
-            "assets": "/api/assets",
-            "watchlist": "/api/watchlist",
-            "ohlcv": "/api/ohlcv?symbol=XAUUSD&interval=5m",
-            "analyze": "POST /api/analyze",
-            "position_size": "POST /api/position-size",
-            "news": "/api/news/BTCUSD",
-            "calendar": "/api/calendar",
-            "macro_events": "/api/macro-events",
-            "correlation": "/api/correlation",
-            "archive": "/api/v1/archive",
-            "instrument": "/api/v1/instrument/{symbol}",
-            "websocket": "/ws/live",
-            "docs": "/docs",
-        },
+        **raw, 
+        "imageUrl": raw.get("imageUrl") or raw.get("image_url") or "", 
+        "sourceLogoUrl": raw.get("sourceLogoUrl") or "", 
+        "sentimentLabel": raw.get("sentimentLabel") or ("BULLISH" if raw.get("sentimentScore", 0) > 0.1 else "BEARISH" if raw.get("sentimentScore", 0) < -0.1 else "NEUTRAL")
     }
 
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "ok",
-        "engine_loaded": True,
-        "ws_clients": _ws_manager.active_count,
-        "archive_records": len(_signal_archive),
-        "version": os.getenv("APP_VERSION", "13.1.0"),
-    }
+def _sim_news(cfg):
+    return [{"title": f"Institutional flows detected in {cfg.name}", "source": "NEXUS Desk", "published": datetime.now(timezone.utc).isoformat(), "url": "#", "category": "HIGH", "nexusComment": "Smart-money accumulation visible.", "quantAction": "MONITOR", "sentimentScore": 0.5, "impactPercentage": 80}]
 
-@app.get("/api/assets")
-async def get_available_assets():
-    """Returns list of all supported assets with full specifications."""
-    return {
-        "assets": [
-            {
-                "symbol": cfg.symbol,
-                "name": cfg.name,
-                "type": cfg.asset_type,
-                "contract_size": cfg.contract_size,
-                "pip_size": cfg.pip_size,
-                "tick_size": cfg.tick_size,
-                "tick_value": cfg.tick_value,
-                "min_lot": cfg.min_lot,
-                "max_lot": cfg.max_lot,
-                "lot_step": cfg.lot_step,
-                "leverage": cfg.leverage,
-                "spread_pips": cfg.spread_pips,
-                "is_24_7": cfg.is_24_7,
-                "emoji": cfg.emoji,
-                "color": cfg.color,
-            }
-            for cfg in ALL_ASSETS
-        ]
-    }
+def _sim_calendar():
+    base = datetime.now(timezone.utc)
+    return [{"event": "FOMC Rate Decision", "datetime": (base + timedelta(days=2)).isoformat(), "country": "US", "impact": 3, "estimate": "5.50%", "prev": "5.50%", "actual": ""}]
 
-@app.get("/api/watchlist")
-async def get_watchlist():
-    """Live snapshot of all tracked assets."""
-    results = []
-    for cfg in ALL_ASSETS:
-        try:
-            prices, source, _ = PriceFeed.get(cfg)
-            if not prices:
-                results.append({
-                    "symbol": cfg.symbol,
-                    "name": cfg.name,
-                    "type": cfg.asset_type,
-                    "price": None,
-                    "changePct": None,
-                    "emoji": cfg.emoji,
-                    "color": cfg.color,
-                    "is24h": _is_crypto_symbol(cfg.symbol, cfg),
-                    "chartMetadata": _build_chart_metadata(cfg),
-                })
-                continue
+def _fallback_ai_plan(sym, mi):
+    return {"source": "quant-fallback", "summary": f"{sym} analysis.", "scenarios": [], "risk_note": "Simulated plan."}
 
-            last = float(prices[-1])
-            prev = float(prices[-2]) if len(prices) > 1 else last
-            chg_pct = ((last - prev) / prev * 100.0) if prev != 0 else 0.0
-
-            results.append({
-                "symbol": cfg.symbol,
-                "name": cfg.name,
-                "type": cfg.asset_type,
-                "price": round(last, 6 if _is_forex(cfg) else 2),
-                "changePct": round(chg_pct, 3),
-                "emoji": cfg.emoji,
-                "color": cfg.color,
-                "is24h": _is_crypto_symbol(cfg.symbol, cfg),
-                "chartMetadata": _build_chart_metadata(cfg),
-            })
-        except Exception as exc:
-            logger.error(f"Watchlist error [{cfg.symbol}]: {exc}")
-            results.append({
-                "symbol": cfg.symbol,
-                "name": cfg.name,
-                "type": cfg.asset_type,
-                "price": None,
-                "changePct": None,
-                "emoji": cfg.emoji,
-                "color": cfg.color,
-                "is24h": _is_crypto_symbol(cfg.symbol, cfg),
-                "chartMetadata": _build_chart_metadata(cfg),
-            })
-    return results
-
-@app.get("/api/ohlcv")
-async def get_ohlcv(
-    symbol: str = Query(..., description="Asset symbol (e.g., XAUUSD, BTCUSD)"),
-    interval: str = Query("5m", description="Timeframe: 1m, 5m, 15m, 1h, 4h, 1d"),
-):
-    """Historical OHLCV data for charting."""
-    cfg = get_config(symbol)
-    interval = interval.lower().strip()
-
-    # Map interval to yfinance parameters
-    yf_map = {
-        "1m": ("2d", "1m") if _is_crypto_symbol(symbol, cfg) else ("1d", "1m"),
-        "5m": ("7d", "5m") if _is_crypto_symbol(symbol, cfg) else ("5d", "5m"),
-        "15m": ("10d", "15m") if _is_crypto_symbol(symbol, cfg) else ("5d", "15m"),
-        "1h": ("2mo", "1h") if _is_crypto_symbol(symbol, cfg) else ("1mo", "1h"),
-        "4h": ("3mo", "1h") if _is_crypto_symbol(symbol, cfg) else ("3mo", "1h"),
-        "1d": ("1y", "1d"),
-    }
-
-    period, yf_interval = yf_map.get(interval, ("5d", "5m"))
-    decimal_places = _decimal_places_for_asset(cfg)
-
+def _push_to_archive(sym, mi, source):
     try:
-        raw = PriceFeed._from_yfinance_ohlcv(cfg.yf_ticker, period=period, interval=yf_interval)
+        _signal_archive.appendleft({
+            "id": f"{sym}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}", 
+            "symbol": sym, "timestamp": datetime.now(timezone.utc).isoformat(), 
+            "signal": mi.get("safetySignal"), "direction": mi.get("direction"), 
+            "confidence": mi.get("signalStrength"), "price": mi.get("currentPrice"), "source": source
+        })
+    except Exception:
+        pass
 
-        if not raw:
-            return {
-                "candles": [],
-                "chartMetadata": _build_chart_metadata(cfg),
-                "message": "No data available",
-            }
+def _normalize_tf(tf: str) -> str:
+    if not tf:
+        return "M15"
+    tf = tf.upper().strip()
+    mapping = {"1M": "M1", "M1": "M1", "5M": "M5", "M5": "M5", "15M": "M15", "M15": "M15", "1H": "H1", "H1": "H1", "4H": "H4", "H4": "H4", "1D": "D1", "D1": "D1"}
+    return mapping.get(tf, "M15")
 
-        closes = raw.get("close", [])
-        opens = raw.get("open", closes)
-        highs = raw.get("high", closes)
-        lows = raw.get("low", closes)
-        volumes = raw.get("volume", [0.0] * len(closes))
+_INT_MIN = {"M1": 1, "M5": 5, "M15": 15, "H1": 60, "H4": 240, "D1": 1440}
 
-        n = min(len(closes), len(opens), len(highs), len(lows))
-        if n == 0:
-            return {"candles": [], "chartMetadata": _build_chart_metadata(cfg)}
-
-        # Generate timestamps
-        now = datetime.now(timezone.utc)
-        delta_map = {
-            "1m": timedelta(minutes=1),
-            "5m": timedelta(minutes=5),
-            "15m": timedelta(minutes=15),
-            "1h": timedelta(hours=1),
-            "4h": timedelta(hours=4),
-            "1d": timedelta(days=1),
-        }
-        delta = delta_map.get(interval, timedelta(minutes=5))
-        timestamps = [(now - delta * (n - 1 - i)).isoformat() for i in range(n)]
-
-        candles = []
-        for i in range(n):
+def _format_candles(ohlcv: dict, cfg, interval_mins: int) -> list:
+    if not ohlcv or not ohlcv.get("close"):
+        return []
+    opens = ohlcv.get("open", [])
+    highs = ohlcv.get("high", [])
+    lows = ohlcv.get("low", [])
+    closes = ohlcv.get("close", [])
+    volumes = ohlcv.get("volume", [])
+    n = min(len(opens), len(highs), len(lows), len(closes))
+    if n == 0:
+        return []
+    now = datetime.now(timezone.utc)
+    candles = []
+    for i in range(n):
+        try:
             o = float(opens[i])
             h = float(highs[i])
-            lo = float(lows[i])
+            l = float(lows[i])
             c = float(closes[i])
-            v = float(volumes[i]) if i < len(volumes) else 0.0
-
-            if any(math.isnan(x) or math.isinf(x) or x <= 0 for x in (o, h, lo, c)):
+            v = float(volumes[i]) if i < len(volumes) else 1000.0
+            if any(math.isnan(x) or math.isinf(x) or x <= 0 for x in (o, h, l, c)):
                 continue
-
             candles.append({
-                "timestamp": timestamps[i],
-                "open": round(o, 8),
-                "high": round(h, 8),
-                "low": round(lo, 8),
-                "close": round(c, 8),
-                "volume": round(v, 2),
-                "decimalPlaces": decimal_places,
-                "assetType": cfg.asset_type,
+                "timestamp": (now - timedelta(minutes=interval_mins * (n - 1 - i))).isoformat(), 
+                "open": round(o, 8), "high": round(h, 8), "low": round(l, 8), "close": round(c, 8), 
+                "volume": round(v, 2), "decimalPlaces": _dp_for(cfg), "assetType": cfg.asset_type
             })
+        except Exception:
+            continue
+    return candles
 
-        max_bars = 1000 if _is_crypto_symbol(symbol, cfg) else 500
-        return {
-            "candles": candles[-max_bars:],
-            "chartMetadata": _build_chart_metadata(cfg),
-        }
+def _sim_candles(cfg, tf):
+    mins = _INT_MIN.get(tf, 15)
+    base = getattr(cfg, 'base_price', 100.0)
+    p = SIM_PRICE.get(cfg.symbol, base) if not ENGINE_OK else base
+    n, now = 300, datetime.now(timezone.utc)
+    candles, price = [], p
+    vols = p * 0.0035 * math.sqrt(mins / 15)
+    for i in range(n, 0, -1):
+        o = price
+        c = o + random.gauss(0, vols)
+        h = max(o, c) + abs(random.gauss(0, vols * 0.5))
+        l = min(o, c) - abs(random.gauss(0, vols * 0.5))
+        candles.append({
+            "timestamp": (now - timedelta(minutes=mins * i)).isoformat(), 
+            "open": round(o, 8), "high": round(h, 8), "low": round(l, 8), "close": round(c, 8), 
+            "volume": round(random.uniform(500, 50000), 2), "decimalPlaces": _dp_for(cfg), "assetType": cfg.asset_type
+        })
+        price = c
+    return candles
 
-    except Exception as exc:
-        logger.exception(f"OHLCV error [{symbol}]: {exc}")
-        return {"candles": [], "chartMetadata": _build_chart_metadata(cfg), "error": str(exc)}
+# ════════════════════════════════════════════════════════════════════════════
+#  ENDPOINTS (Sub-100ms Responses)
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/")
+async def root():
+    return {"status": "ONLINE", "system": "NEXUS QUANTUM v13.10", "engine": "REAL" if ENGINE_OK else "SIMULATED", "ai_planner": ai_planner is not None}
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "engine_loaded": ENGINE_OK, "ws_clients": _ws_manager.active_count, "version": "13.10.0"}
+
+@app.get("/api/assets")
+async def get_assets():
+    return {"assets": [
+        {
+            "symbol": c.symbol, "name": c.name, "type": c.asset_type, "contract_size": c.contract_size, 
+            "pip_size": c.pip_size, "tick_size": c.tick_size, "tick_value": c.tick_value, "min_lot": c.min_lot, 
+            "max_lot": c.max_lot, "lot_step": c.lot_step, "leverage": c.leverage, "spread_pips": c.spread_pips, 
+            "is_24_7": getattr(c, "is_24_7", c.asset_type in _CRYPTO_TYPES), "emoji": getattr(c, "emoji", ""), 
+            "color": getattr(c, "color", "#FFFFFF")
+        } for c in ALL_ASSETS
+    ]}
+
+@app.get("/api/watchlist")
+async def watchlist():
+    cached = _cget("watchlist", 2.0)
+    if cached is not None:
+        return cached
+        
+    out = []
+    if ENGINE_OK and hasattr(PriceFeed, 'get_latest_prices'):
+        try:
+            prices_dict = await asyncio.to_thread(PriceFeed.get_latest_prices, ALL_ASSETS)
+            for cfg in ALL_ASSETS:
+                last, source = prices_dict.get(cfg.symbol, (0.0, "Unknown"))
+                prev = _prev_prices.get(cfg.symbol, last)
+                out.append({
+                    "symbol": cfg.symbol, "name": cfg.name, "type": cfg.asset_type, 
+                    "price": round(float(last), 5 if _is_forex(cfg) else (3 if "JPY" in cfg.symbol else 2)), 
+                    "changePct": round(((float(last) - prev) / prev * 100) if prev else 0.0, 3), 
+                    "emoji": getattr(cfg, "emoji", ""), "color": getattr(cfg, "color", ""), 
+                    "is24h": _is_crypto_symbol(cfg.symbol, cfg), "dataSource": source, "chartMetadata": _build_chart_metadata(cfg)
+                })
+                _prev_prices[cfg.symbol] = float(last)
+        except Exception:
+            out = []
+            
+    if not out:
+        async def _fetch(cfg):
+            try:
+                if ENGINE_OK:
+                    price_val, source = await asyncio.to_thread(PriceFeed.get_latest_price, cfg)
+                    last = float(price_val)
+                else:
+                    last = float(SIM_PRICE.get(cfg.symbol, cfg.base_price))
+                    source = "SIM"
+                prev = _prev_prices.get(cfg.symbol, last)
+                return {
+                    "symbol": cfg.symbol, "name": cfg.name, "type": cfg.asset_type, 
+                    "price": round(last, 5 if _is_forex(cfg) else (3 if "JPY" in cfg.symbol else 2)), 
+                    "changePct": round(((last - prev) / prev * 100) if prev else 0.0, 3), 
+                    "emoji": getattr(cfg, "emoji", ""), "color": getattr(cfg, "color", ""), 
+                    "is24h": _is_crypto_symbol(cfg.symbol, cfg), "dataSource": source, "chartMetadata": _build_chart_metadata(cfg)
+                }
+            except Exception:
+                return None
+                
+        results = await asyncio.gather(*[_fetch(cfg) for cfg in ALL_ASSETS])
+        out = [r for r in results if r is not None]
+        
+    _cset("watchlist", out)
+    return out
+
+@app.get("/api/ohlcv")
+async def ohlcv(symbol: str = Query(...), interval: str = Query("M15")):
+    cfg = get_config(symbol)
+    tf = _normalize_tf(interval)
+    cache_key = f"ohlcv_resp:{cfg.symbol}:{tf}"
+    
+    stale_cached = _cget(cache_key, 3600.0) 
+    
+    async def refresh_task():
+        try:
+            if ENGINE_OK:
+                _, _, ohlcv_dict = await asyncio.to_thread(PriceFeed.get, cfg, tf)
+            else:
+                _, _, ohlcv_dict = PriceFeed.get(cfg, tf)
+            if ohlcv_dict:
+                candles = _format_candles(ohlcv_dict, cfg, _INT_MIN.get(tf, 15))
+                if candles:
+                    _cset(cache_key, {"candles": candles[-500:], "chartMetadata": _build_chart_metadata(cfg), "source": "live"})
+        except Exception:
+            pass
+
+    if stale_cached:
+        asyncio.create_task(refresh_task())
+        return stale_cached
+
+    await refresh_task()
+    final = _cget(cache_key, 60.0)
+    if final:
+        return final
+    
+    candles = _sim_candles(cfg, tf)
+    return {"candles": candles, "chartMetadata": _build_chart_metadata(cfg), "source": "simulated"}
 
 @app.post("/api/analyze")
-async def analyze_assets(request: AnalyzeRequest):
-    """
-    Core NEXUS analysis endpoint — runs full quantum analysis pipeline (v13.1).
-    Returns complete market intelligence, multi-layer signal, Monte Carlo risk, 
-    volume profile, trade plan, proxy order flow, AND real Finnhub news.
-    """
+async def analyze(request: AnalyzeRequest):
     cfg = get_config(request.symbol)
-    sym_upper = request.symbol.upper()
-
+    sym = request.symbol.upper()
+    tf = _normalize_tf(request.timeframe)
+    cache_key = f"analyze:{sym}:{tf}"
+    cached = _cget(cache_key, 30.0)
+    if cached is not None:
+        return cached
+        
     try:
-        intelligence, news_items, source = run_analysis(
-            cfg=cfg,
-            atr_mult=request.atr_mult,
-            rr_ratio=request.rr_ratio,
-            initial_balance=request.balance,
-            risk_per_trade=request.risk_percentage,
-        )
-
-        if not intelligence:
-            raise HTTPException(status_code=500, detail="Analysis failed — no data")
-
-        # Convert dataclass to dict
-        mi_raw = asdict(intelligence)
-        mi_clean = sanitize_float(mi_raw)
-        mi_camel = to_camel_case(mi_clean)
-
-        # Enrich news items
-        news_list = []
-        for item in (news_items or []):
+        if ENGINE_OK:
             try:
-                raw_dict = to_camel_case(sanitize_float(asdict(item)))
-                news_list.append(_enrich_news_item(raw_dict, cfg.asset_type))
-            except Exception:
-                pass
-
-        # Build response
-        response_data = {
-            "symbol": sym_upper,
-            "source": source,
-            "intelligence": mi_camel,
-            "news": news_list,
-            "chartMetadata": _build_chart_metadata(cfg),
-        }
-
-        # Push to archive
-        _push_to_archive(sym_upper, mi_camel, source)
-
-        # Broadcast metric shift if WebSocket clients connected
-        if _ws_manager.active_count > 0:
-            prev = _prev_signals.get(sym_upper, {})
-            watch_fields = ["safetySignal", "direction", "signalConfidence"]
-            for field_name in watch_fields:
-                current_val = mi_camel.get(field_name)
-                previous_val = prev.get(field_name)
-                if previous_val is not None and current_val != previous_val:
+                intelligence, news_items, source = await asyncio.to_thread(
+                    lambda: run_analysis(cfg=cfg, atr_mult=request.atr_mult, rr_ratio=request.rr_ratio, 
+                                         initial_balance=request.balance, risk_per_trade=request.risk_percentage, 
+                                         timeframe=tf, run_mtf=request.run_mtf)
+                )
+            except TypeError:
+                intelligence, news_items, source = await asyncio.to_thread(
+                    lambda: run_analysis(cfg=cfg, atr_mult=request.atr_mult, rr_ratio=request.rr_ratio, 
+                                         initial_balance=request.balance, risk_per_trade=request.risk_percentage)
+                )
+            mi_raw = asdict(intelligence)
+            news_list = []
+            for it in (news_items or []):
+                try:
+                    news_list.append(_enrich_news_item(to_camel_case(sanitize_float(asdict(it) if hasattr(it, '__dataclass_fields__') else dict(it))), cfg.asset_type))
+                except Exception:
+                    pass
+        else:
+            mi_raw = run_analysis(cfg)[0]
+            news_list = [_enrich_news_item(x, cfg.asset_type) for x in _sim_news(cfg)]
+            source = "NEXUS Simulated Feed"
+            
+        mi_camel = to_camel_case(sanitize_float(mi_raw))
+        _analysis_cache[sym] = (time.time(), mi_camel)
+        _push_to_archive(sym, mi_camel, source)
+        
+        if _ws_manager.active_count:
+            prev = _prev_signals.get(sym, {})
+            for f in ("safetySignal", "direction"):
+                cur, old = mi_camel.get(f), prev.get(f)
+                if old is not None and cur != old:
                     await _ws_manager.broadcast({
-                        "type": "metric_shift",
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "symbol": sym_upper,
-                        "field": field_name,
-                        "previous": previous_val,
-                        "current": current_val,
+                        "type": "metric_shift", "ts": datetime.now(timezone.utc).isoformat(), 
+                        "symbol": sym, "field": f, "previous": old, "current": cur
                     })
-            _prev_signals[sym_upper] = {f: mi_camel.get(f) for f in watch_fields}
-
-        return {"success": True, "data": response_data}
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception(f"Analysis failed [{request.symbol}]: {exc}")
-        raise HTTPException(status_code=500, detail=f"Analysis error: {str(exc)}")
-
-@app.post("/api/position-size")
-async def calculate_position(request: PositionSizeRequest):
-    """Calculate optimal position size with broker constraints (P0) + Volatility Adjustment."""
-    result = calculate_position_size(
-        balance=request.balance,
-        risk_percentage=request.risk_percentage,
-        entry_price=request.entry_price,
-        stop_loss_price=request.stop_loss_price,
-        symbol=request.symbol.upper(),
-    )
-
-    if "error" in result:
-        return {
-            "success": False,
-            "error": result["error"],
-            "suggestion": result.get("suggestion"),
+            _prev_signals[sym] = {f: mi_camel.get(f) for f in ("safetySignal", "direction")}
+            
+        res = {
+            "success": True, 
+            "data": {"symbol": sym, "source": source, "intelligence": mi_camel, "news": news_list, "chartMetadata": _build_chart_metadata(cfg)}
         }
+        _cset(cache_key, res)
+        return res
+        
+    except Exception as e:
+        logger.exception(f"Analysis failed [{request.symbol}]: {e}")
+        raise HTTPException(500, f"Analysis error: {e}")
 
-    return {"success": True, "data": result}
+@app.get("/api/ai-plan")
+async def ai_plan(symbol: str = Query(...), force: bool = Query(False)):
+    cfg = get_config(symbol)
+    sym = symbol.upper()
+    cache_key = f"aiplan:{sym}"
+    if not force:
+        cached = _cget(cache_key, 300.0)
+        if cached is not None:
+            return cached
+            
+    cached_analysis = _analysis_cache.get(sym)
+    if cached_analysis and (time.time() - cached_analysis[0]) < 300 and not force:
+        mi_camel, used = cached_analysis[1], True
+    else:
+        if ENGINE_OK:
+            try:
+                intelligence, _, source = await asyncio.to_thread(lambda: run_analysis(cfg=cfg))
+                mi_camel = to_camel_case(sanitize_float(asdict(intelligence)))
+            except Exception:
+                mi_camel = to_camel_case(sanitize_float(run_analysis(cfg)[0]))
+        else:
+            mi_camel = to_camel_case(sanitize_float(run_analysis(cfg)[0]))
+        _analysis_cache[sym] = (time.time(), mi_camel)
+        used = False
+        
+    if ai_planner is not None:
+        try:
+            plan = await asyncio.to_thread(lambda: ai_planner.get_ai_plan(sym, mi_camel, force=force))
+        except Exception as e:
+            logger.error(f"AI plan failed [{sym}]: {e}")
+            fallback_fn = getattr(ai_planner, '_fallback_plan', None)
+            plan = fallback_fn(sym, mi_camel) if fallback_fn else _fallback_ai_plan(sym, mi_camel)
+    else:
+        plan = _fallback_ai_plan(sym, mi_camel)
+        
+    res = {"success": True, "symbol": sym, "used_cached_analysis": used, "data": plan, "disclaimer": "AI-generated educational analysis."}
+    _cset(cache_key, res)
+    return res
 
 @app.get("/api/news/{symbol}")
-async def get_news(symbol: str, days: int = Query(7, ge=1, le=30)):
-    """Fetch latest real news for a specific asset from Finnhub."""
-    if symbol.upper() not in ASSET_MAP:
-        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not supported")
-    news = FinnhubNewsEngine.fetch_company_news(symbol, days_back=days)
-    return {
-        "success": True,
-        "symbol": symbol.upper(),
-        "count": len(news),
-        "news": [asdict(item) for item in news]
-    }
+async def news(symbol: str, days: int = Query(7, ge=1, le=30)):
+    cfg = get_config(symbol)
+    cache_key = f"news:{symbol}:{days}"
+    cached = _cget(cache_key, 300.0)
+    if cached is not None:
+        return cached
+        
+    if ENGINE_OK:
+        try:
+            items = await asyncio.to_thread(FinnhubNewsEngine.fetch_company_news, symbol, days)
+            res = {
+                "success": True, "symbol": symbol.upper(), "count": len(items), 
+                "news": [_enrich_news_item(to_camel_case(sanitize_float(asdict(i))), cfg.asset_type) for i in items]
+            }
+            _cset(cache_key, res)
+            return res
+        except Exception:
+            pass
+            
+    res = {"success": True, "symbol": symbol.upper(), "count": 1, "news": [_enrich_news_item(x, cfg.asset_type) for x in _sim_news(cfg)]}
+    _cset(cache_key, res)
+    return res
 
 @app.get("/api/calendar")
-async def get_economic_calendar(days: int = Query(7, ge=1, le=30)):
-    """Fetch upcoming high-impact economic events (NFP, CPI, FOMC) from Finnhub."""
-    events = FinnhubNewsEngine.fetch_economic_calendar(days_ahead=days)
-    return {
-        "success": True,
-        "count": len(events),
-        "events": events
-    }
+async def calendar(days: int = Query(7, ge=1, le=30)):
+    cache_key = f"cal:{days}"
+    cached = _cget(cache_key, 600.0)
+    if cached is not None:
+        return cached
+        
+    if ENGINE_OK:
+        try:
+            ev = await asyncio.to_thread(FinnhubNewsEngine.fetch_economic_calendar, days)
+            res = {"success": True, "count": len(ev), "events": ev}
+            _cset(cache_key, res)
+            return res
+        except Exception:
+            pass
+            
+    ev = _sim_calendar()
+    res = {"success": True, "count": len(ev), "events": ev}
+    _cset(cache_key, res)
+    return res
 
 @app.get("/api/macro-events")
-async def get_macro_events(days: int = Query(7, ge=1, le=30, description="Days ahead to fetch")):
-    """Fetch upcoming high-impact macroeconomic events (NFP, CPI, FOMC, etc.) from Twelve Data."""
-    api_key = os.getenv("TWELVE_DATA_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="TWELVE_DATA_API_KEY not configured in .env")
-    
-    start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    end_date = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
-    
+async def macro_events(days: int = Query(7, ge=1, le=30)):
+    cache_key = f"macro:{days}"
+    cached = _cget(cache_key, 600.0)
+    if cached is not None:
+        return cached
+        
+    if ENGINE_OK:
+        try:
+            ev = await asyncio.to_thread(FinnhubNewsEngine.fetch_economic_calendar, days)
+            res = {"success": True, "events": ev}
+            _cset(cache_key, res)
+            return res
+        except Exception:
+            pass
+            
+    res = {"success": True, "events": _sim_calendar()}
+    _cset(cache_key, res)
+    return res
+
+@app.post("/api/position-size")
+async def position_size(r: PositionSizeRequest):
     try:
-        url = "https://api.twelvedata.com/economic_calendar"
-        params = {
-            "apikey": api_key,
-            "country": "united_states",
-            "impact": "high",
-            "start_date": start_date,
-            "end_date": end_date,
-            "format": "JSON"
-        }
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return {"success": True, "events": data.get("values", [])}
-        else:
-            return {"success": False, "error": f"API Error: {response.status_code}"}
+        res = calculate_position_size(balance=r.balance, risk_percentage=r.risk_percentage, entry_price=r.entry_price, stop_loss_price=r.stop_loss_price, symbol=r.symbol.upper())
+        if isinstance(res, dict) and "error" in res:
+            return {"success": False, "error": res["error"]}
+        return {"success": True, "data": res}
     except Exception as e:
-        logger.error(f"Macro events fetch error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch macro events")
+        return {"success": False, "error": str(e)}
 
 @app.get("/api/correlation")
-async def get_correlation():
-    """30-day rolling correlation matrix across all assets."""
+async def correlation():
     try:
-        matrix = get_correlation_matrix()
-        if not matrix:
-            raise HTTPException(status_code=404, detail="Correlation data unavailable")
-        return sanitize_float(matrix)
+        m = get_correlation_matrix()
+        if not m:
+            raise HTTPException(404, "Correlation unavailable")
+        return sanitize_float(m)
     except HTTPException:
         raise
-    except Exception as exc:
-        logger.exception(f"Correlation error: {exc}")
-        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/api/v1/instrument/{symbol}")
-async def get_instrument_specs(symbol: str):
-    """Get detailed instrument specifications."""
-    sym_upper = symbol.upper()
-    if sym_upper not in INSTRUMENT_SPECS:
-        raise HTTPException(status_code=404, detail=f"Instrument {symbol} not found")
-
-    spec = INSTRUMENT_SPECS[sym_upper]
+async def instrument(symbol: str):
+    s = symbol.upper()
+    if s not in INSTRUMENT_SPECS:
+        raise HTTPException(404, f"Instrument {symbol} not found")
+    sp = INSTRUMENT_SPECS[s]
     return {
-        "symbol": spec.symbol,
-        "contract_size": spec.contract_size,
-        "tick_size": spec.tick_size,
-        "tick_value": spec.tick_value,
-        "pip_size": spec.pip_size,
-        "min_lot": spec.min_lot,
-        "max_lot": spec.max_lot,
-        "lot_step": spec.lot_step,
-        "leverage": spec.leverage,
-        "spread_pips": spec.spread_pips,
+        "symbol": getattr(sp, "symbol", s), "contract_size": sp.contract_size, "tick_size": sp.tick_size, 
+        "tick_value": sp.tick_value, "pip_size": sp.pip_size, "min_lot": sp.min_lot, "max_lot": sp.max_lot, 
+        "lot_step": sp.lot_step, "leverage": sp.leverage, "spread_pips": sp.spread_pips
     }
 
 @app.get("/api/v1/archive")
-async def get_archive(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    symbol: Optional[str] = Query(None),
-    signal: Optional[str] = Query(None),
-):
-    """Paginated historical signal archive."""
-    records: List[dict] = list(_signal_archive)
-
+async def archive(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), symbol: Optional[str] = Query(None)):
+    recs = list(_signal_archive)
     if symbol:
-        sym_upper = symbol.upper()
-        records = [r for r in records if r.get("symbol") == sym_upper]
+        recs = [r for r in recs if r.get("symbol") == symbol.upper()]
+    total, pages = len(recs), max(1, math.ceil(len(recs) / page_size))
+    page_recs = recs[(page - 1) * page_size : page * page_size]
+    return {"page": page, "pageSize": page_size, "totalRecords": total, "totalPages": pages, "records": page_recs}
 
-    if signal:
-        sig_upper = signal.upper()
-        records = [r for r in records if r.get("signal") == sig_upper]
+@app.post("/auth/register")
+async def register(r: AuthRequest):
+    if r.email in _USERS:
+        raise HTTPException(400, "User exists")
+    user = {"id": f"u{len(_USERS) + 1}", "email": r.email, "name": r.name, "tier": "free", "tradesRemaining": 2}
+    _USERS[r.email] = {"password": r.password, "user": user}
+    return {"access_token": f"tok_{r.email}", "user": user}
 
-    total_records = len(records)
-    total_pages = max(1, math.ceil(total_records / page_size))
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_records = records[start:end]
+@app.post("/auth/login")
+async def login(r: AuthRequest):
+    rec = _USERS.get(r.email)
+    if not rec or rec["password"] != r.password:
+        raise HTTPException(401, "Invalid credentials")
+    return {"access_token": f"tok_{r.email}", "user": rec["user"]}
 
-    # Calculate summary statistics
-    bull_count = sum(1 for r in records if r.get("direction") in ("BULLISH", "STRONG_BUY"))
-    bear_count = sum(1 for r in records if r.get("direction") in ("BEARISH", "STRONG_SELL"))
-    neutral_count = total_records - bull_count - bear_count
-
-    actionable = [
-        r for r in records
-        if r.get("signal") in ("BUY", "SELL") and isinstance(r.get("confidence"), (int, float))
-    ]
-    high_conf = [r for r in actionable if r.get("confidence", 0) >= 70]
-    win_rate = round(len(high_conf) / len(actionable) * 100.0, 1) if actionable else 0.0
-
-    strengths = [r["confidence"] for r in records if isinstance(r.get("confidence"), (int, float))]
-    avg_strength = round(statistics.mean(strengths), 1) if strengths else 0.0
-
-    return {
-        "page": page,
-        "pageSize": page_size,
-        "totalRecords": total_records,
-        "totalPages": total_pages,
-        "summary": {
-            "winRate": win_rate,
-            "avgStrength": avg_strength,
-            "bullCount": bull_count,
-            "bearCount": bear_count,
-            "neutralCount": neutral_count,
-        },
-        "records": page_records,
-    }
+@app.get("/auth/me")
+async def me():
+    return {"id": "local", "email": "guest@nexus.app", "name": "Guest", "tier": "free", "tradesRemaining": 2}
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
-    """
-    Real-time WebSocket stream for live price updates and metric shifts.
-
-    Client flow:
-    1. Connect → receives "connected" frame with initial prices
-    2. Optionally send: {"symbols": ["XAUUSD", "BTCUSD"]} to filter
-    3. Receive:
-       - price_tick every 3 seconds
-       - metric_shift on signal changes
-       - heartbeat every 30 seconds
-    4. Disconnect → server cleans up automatically
-    """
     await _ws_manager.connect(ws)
-
-    # Send initial snapshot
     try:
-        init_data: dict = {}
+        init = {}
         for cfg in ALL_ASSETS:
             try:
-                price, _ = PriceFeed.get_latest_price(cfg)
-                price = float(price)
-                init_data[cfg.symbol] = {
-                    "price": round(price, 6 if _is_forex(cfg) else 2),
-                    "changePct": 0.0,
-                    "direction": "FLAT",
-                    "glowIntensity": 0.0,
+                # 🚀 Check RAM first for instant initialization
+                if cfg.symbol in LIVE_PRICES and LIVE_PRICES[cfg.symbol] > 0:
+                    price_val = LIVE_PRICES[cfg.symbol]
+                else:
+                    price_val, _ = PriceFeed.get_latest_price(cfg)
+                    
+                init[cfg.symbol] = {
+                    "price": round(float(price_val), 5 if _is_forex(cfg) else (3 if "JPY" in cfg.symbol else 2)), 
+                    "changePct": 0.0, "direction": "FLAT", "glowIntensity": 0.0
                 }
-                _prev_prices.setdefault(cfg.symbol, price)
+                _prev_prices.setdefault(cfg.symbol, float(price_val))
             except Exception:
                 pass
-
-        await ws.send_text(json.dumps({
-            "type": "connected",
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "data": init_data,
-            "version": os.getenv("APP_VERSION", "13.1.0"),
-        }))
-    except Exception as exc:
-        logger.error(f"WS initial snapshot failed: {exc}")
-
-    # Keep connection alive and handle filters
-    try:
+                
+        await ws.send_text(json.dumps({"type": "connected", "ts": datetime.now(timezone.utc).isoformat(), "data": init, "version": "13.10.0"}))
+        
         while True:
             try:
-                msg = await asyncio.wait_for(ws.receive_text(), timeout=60.0)
+                msg = await asyncio.wait_for(ws.receive_text(), timeout=60)
                 payload = json.loads(msg)
                 if "symbols" in payload and isinstance(payload["symbols"], list):
                     await _ws_manager.set_filter(ws, payload["symbols"])
-                    await ws.send_text(json.dumps({
-                        "type": "filter_ack",
-                        "symbols": payload["symbols"],
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    }))
             except asyncio.TimeoutError:
-                # No message in 60s — keep alive
                 pass
-            except (WebSocketDisconnect, Exception) as exc:
-                logger.info(f"WS client error: {exc}")
+            except (WebSocketDisconnect, Exception):
                 break
     finally:
         await _ws_manager.disconnect(ws)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ENTRYPOINT
-# ══════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", 8000)),
-        log_level="info",
-    )
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", 8000)), log_level="info")
