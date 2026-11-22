@@ -1,37 +1,14 @@
 // ============================================================================
-//  NEXUS v11.3 — home_shell.dart
+//  NEXUS v13.4 — home_shell.dart
 //  Responsive shell: DesktopDashboard (≥1100 px) / MobileTerminal (< 1100 px).
-//
-//  v11.3 additions over v11.2:
-//  ─────────────────────────────────────────────────────────────────────────
-//  WATCHLIST TILE — FULL OBJECT PROPAGATION
-//  • Watchlist tiles now call selectSymbol(w.symbol) unchanged in signature,
-//    but the tile's onTap callback is wired through _handleTileTap() which
-//    first calls selectSymbol() then — if the asset is crypto / is24h —
-//    calls runQuantumScan() immediately so the signal card refreshes for the
-//    new asset without waiting for the first timer tick.
-//  • Crypto tiles get a pulsing "● LIVE" micro-indicator on their right edge
-//    when that symbol is the currently selected one, driven by MarketState.isLive.
-//  • The desktop scan column shows a "LIVE AUTO-SCAN" indicator row when
-//    isLive == true so the user knows the periodic feed is active.
-//
-//  LIVE STATUS IN STATUS BAR
-//  • _TopStatusBar shows a pulsing green dot + "LIVE FEED" label when
-//    MarketState.isLive is true (crypto selected with timer running).
-//
-//  CHART SECTION
-//  • NexusCandleChart receives assetType, is24h, and the correct decimal
-//    places on every rebuild.  When candles is empty AND loadingCandles is
-//    true a shimmer-style skeleton is shown instead of the permanent
-//    "AWAITING CHART DATA" message, giving immediate visual feedback after
-//    a symbol switch.
-//  ─────────────────────────────────────────────────────────────────────────
+//  Fully wired with AnalysisOverlay, GlowingSignalCard, and Live Ticks.
 // ============================================================================
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../ads/ad_placeholders.dart';
+import '../models/market_models.dart';
 import '../providers/market_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glowing_signal_card.dart';
@@ -62,7 +39,7 @@ class DesktopDashboard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _TopStatusBar(),
+                const _TopStatusBar(),
                 const SizedBox(height: 8),
                 Expanded(
                   child: Row(
@@ -73,6 +50,9 @@ class DesktopDashboard extends StatelessWidget {
                         child: LayoutBuilder(
                           builder: (context, constraints) {
                             final item = s.selectedItem;
+                            final chartHeight = constraints.maxHeight.isFinite
+                                ? constraints.maxHeight
+                                : 420.0;
                             return ClipRRect(
                               borderRadius: BorderRadius.circular(12),
                               child: ColoredBox(
@@ -80,24 +60,24 @@ class DesktopDashboard extends StatelessWidget {
                                 child: Padding(
                                   padding: const EdgeInsets.all(8),
                                   child: s.loadingCandles && s.candles.isEmpty
-                                      ? _ChartSkeleton(
-                                          height: constraints.maxHeight
-                                              .isFinite
-                                              ? constraints.maxHeight
-                                              : 420,
-                                        )
-                                      : NexusCandleChart(
-                                          data: s.candles,
-                                          height: constraints.maxHeight
-                                                  .isFinite
-                                              ? constraints.maxHeight
-                                              : 420,
-                                          assetType:
-                                              item?.type ?? '',
-                                          is24h:
-                                              item?.is24h ?? false,
-                                          decimalPlaces:
-                                              _dpForType(item?.type),
+                                      ? _ChartSkeleton(height: chartHeight)
+                                      : Stack(
+                                          children: [
+                                            NexusCandleChart(
+                                              data: s.candles,
+                                              liveTickNotifier: s.liveTickNotifier,
+                                              height: chartHeight,
+                                              assetType: item?.type ?? '',
+                                              is24h: item?.is24h ?? false,
+                                              decimalPlaces: _dpForType(item?.type),
+                                            ),
+                                            if (s.lastAnalysis != null)
+                                              Positioned.fill(
+                                                child: AnalysisOverlay(
+                                                  intelligence: s.lastAnalysis!.intelligence,
+                                                ),
+                                              ),
+                                          ],
                                         ),
                                 ),
                               ),
@@ -106,8 +86,8 @@ class DesktopDashboard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      SizedBox(
-                        width: 320,
+                      const SizedBox(
+                        width: 340,
                         child: _ScanAndSignalColumn(),
                       ),
                     ],
@@ -128,18 +108,19 @@ class DesktopDashboard extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  TOP STATUS BAR  — v11.3: live-feed indicator
+//  TOP STATUS BAR
 // ════════════════════════════════════════════════════════════════════════════
 
 class _TopStatusBar extends StatelessWidget {
+  const _TopStatusBar();
+
   @override
   Widget build(BuildContext context) {
-    final s    = context.watch<MarketState>();
+    final s = context.watch<MarketState>();
     final item = s.selectedItem;
 
     return Row(
       children: [
-        // ── API online pill ─────────────────────────────────────────────────
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
@@ -152,9 +133,7 @@ class _TopStatusBar extends StatelessWidget {
               Icon(
                 Icons.circle,
                 size: 10,
-                color: s.online
-                    ? AppTheme.signalBuy
-                    : AppTheme.signalSell,
+                color: s.online ? AppTheme.signalBuy : AppTheme.signalSell,
               ),
               const SizedBox(width: 8),
               Text(
@@ -170,8 +149,8 @@ class _TopStatusBar extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-
-        // ── Symbol label ────────────────────────────────────────────────────
+        _AuthBadge(user: s.currentUser),
+        const SizedBox(width: 12),
         Text(
           'SYMBOL  ${s.selectedSymbol}',
           style: const TextStyle(
@@ -181,11 +160,9 @@ class _TopStatusBar extends StatelessWidget {
             fontSize: 13,
           ),
         ),
-
-        // ── Type chips ──────────────────────────────────────────────────────
         if (item?.is24h == true) ...[
           const SizedBox(width: 8),
-          _TypeChip(label: '24/7', color: AppTheme.signalBuy),
+          const _TypeChip(label: '24/7', color: AppTheme.signalBuy),
         ],
         if ((item?.type ?? '').isNotEmpty) ...[
           const SizedBox(width: 6),
@@ -198,22 +175,38 @@ class _TopStatusBar extends StatelessWidget {
                     : AppTheme.textMuted,
           ),
         ],
-
-        // ── v11.3: pulsing LIVE FEED indicator ──────────────────────────────
         if (s.isLive) ...[
           const SizedBox(width: 10),
           const _PulsingLiveChip(),
         ],
-
         const Spacer(),
+        _CalendarButton(eventCount: s.upcomingEvents.length),
+        const SizedBox(width: 8),
         TextButton.icon(
-          onPressed:
-              s.loadingCandles ? null : () => s.refreshCandles(),
-          icon: const Icon(Icons.refresh,
-              color: AppTheme.goldDim, size: 18),
+          onPressed: s.loadingCandles ? null : () => s.refreshCandles(),
+          icon: const Icon(Icons.refresh, color: AppTheme.goldDim, size: 18),
           label: const Text(
-            'REFRESH CHART',
+            'REFRESH',
             style: TextStyle(color: AppTheme.goldDim, fontSize: 11),
+          ),
+        ),
+        const SizedBox(width: 4),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(
+            backgroundColor: AppTheme.gold,
+            foregroundColor: Colors.black,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onPressed: () => Navigator.pushNamed(context, '/analysis'),
+          icon: const Icon(Icons.analytics, size: 14),
+          label: const Text(
+            'FULL ANALYSIS',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.2,
+            ),
           ),
         ),
       ],
@@ -222,7 +215,279 @@ class _TopStatusBar extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  PULSING LIVE CHIP  — v11.3
+//  AUTH BADGE
+// ════════════════════════════════════════════════════════════════════════════
+
+class _AuthBadge extends StatelessWidget {
+  const _AuthBadge({required this.user});
+  final User? user;
+
+  @override
+  Widget build(BuildContext context) {
+    if (user == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppTheme.textMuted.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.textMuted.withOpacity(0.25)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.person_outline, color: AppTheme.textMuted, size: 12),
+            SizedBox(width: 4),
+            Text(
+              'FREE',
+              style: TextStyle(
+                color: AppTheme.textMuted,
+                fontSize: 9,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final isPro = user!.isPro;
+    final color = isPro ? AppTheme.proAccent : AppTheme.freeAccent;
+    final icon = isPro ? Icons.workspace_premium : Icons.person_outline;
+    final label = isPro ? 'PRO' : 'FREE';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 12),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 9,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.2,
+            ),
+          ),
+          if (!isPro && user!.tradesRemaining < 10) ...[
+            const SizedBox(width: 4),
+            Text(
+              '(${user!.tradesRemaining})',
+              style: TextStyle(
+                color: color.withOpacity(0.7),
+                fontSize: 8,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CALENDAR BUTTON
+// ════════════════════════════════════════════════════════════════════════════
+
+class _CalendarButton extends StatelessWidget {
+  const _CalendarButton({required this.eventCount});
+  final int eventCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasEvents = eventCount > 0;
+    return IconButton(
+      tooltip: 'Economic Calendar ($eventCount events)',
+      onPressed: () => _showCalendarDialog(context),
+      icon: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Icon(
+            Icons.event_busy,
+            color: hasEvents ? AppTheme.gold : AppTheme.textMuted,
+            size: 20,
+          ),
+          if (hasEvents)
+            Positioned(
+              right: -4,
+              top: -4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppTheme.impactHigh,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.oledBlack, width: 1.5),
+                ),
+                child: Text(
+                  '$eventCount',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showCalendarDialog(BuildContext context) {
+    final events = context.read<MarketState>().upcomingEvents;
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: AppTheme.panel,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.goldDim, width: 1),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 500, maxHeight: 600),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.event_busy, color: AppTheme.gold, size: 20),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'ECONOMIC CALENDAR',
+                      style: TextStyle(
+                        color: AppTheme.gold,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: AppTheme.textMuted),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                if (events.isEmpty)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Text(
+                        'No high-impact events in the next 7 days',
+                        style: TextStyle(color: AppTheme.textMuted),
+                      ),
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: events.length,
+                      itemBuilder: (_, i) {
+                        final e = events[i];
+                        final isHigh = e.isHighImpact;
+                        final impactColor = isHigh ? AppTheme.impactHigh : AppTheme.impactMedium;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppTheme.panelRaised,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border(
+                              left: BorderSide(color: impactColor, width: 3),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: impactColor.withOpacity(0.15),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      isHigh ? 'HIGH' : 'MEDIUM',
+                                      style: TextStyle(
+                                        color: impactColor,
+                                        fontSize: 8,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    e.country,
+                                    style: const TextStyle(
+                                      color: AppTheme.textMuted,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    e.datetime,
+                                    style: const TextStyle(
+                                      color: AppTheme.gold,
+                                      fontSize: 10,
+                                      fontFamily: 'monospace',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                e.event,
+                                style: const TextStyle(
+                                  color: AppTheme.textPrimary,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              if (e.estimate.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Est: ${e.estimate}  Prev: ${e.prev}',
+                                  style: const TextStyle(
+                                    color: AppTheme.textMuted,
+                                    fontSize: 10,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  PULSING LIVE CHIP
 // ════════════════════════════════════════════════════════════════════════════
 
 class _PulsingLiveChip extends StatefulWidget {
@@ -232,20 +497,18 @@ class _PulsingLiveChip extends StatefulWidget {
   State<_PulsingLiveChip> createState() => _PulsingLiveChipState();
 }
 
-class _PulsingLiveChipState extends State<_PulsingLiveChip>
-    with SingleTickerProviderStateMixin {
+class _PulsingLiveChipState extends State<_PulsingLiveChip> with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
-  late Animation<double>   _fade;
+  late Animation<double> _fade;
 
   @override
   void initState() {
     super.initState();
     _ctrl = AnimationController(
-      vsync:    this,
+      vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
-    _fade = Tween<double>(begin: 0.45, end: 1.0)
-        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    _fade = Tween<double>(begin: 0.45, end: 1.0).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override
@@ -271,7 +534,7 @@ class _PulsingLiveChipState extends State<_PulsingLiveChip>
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width:  5,
+              width: 5,
               height: 5,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
@@ -296,29 +559,29 @@ class _PulsingLiveChipState extends State<_PulsingLiveChip>
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  TYPE CHIP  (reused throughout)
+//  TYPE CHIP
 // ════════════════════════════════════════════════════════════════════════════
 
 class _TypeChip extends StatelessWidget {
   const _TypeChip({required this.label, required this.color});
   final String label;
-  final Color  color;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
       decoration: BoxDecoration(
-        color:        color.withOpacity(0.10),
+        color: color.withOpacity(0.10),
         borderRadius: BorderRadius.circular(3),
-        border:       Border.all(color: color.withOpacity(0.35)),
+        border: Border.all(color: color.withOpacity(0.35)),
       ),
       child: Text(
         label,
         style: TextStyle(
-          color:       color,
-          fontSize:    8,
-          fontWeight:  FontWeight.bold,
+          color: color,
+          fontSize: 8,
+          fontWeight: FontWeight.bold,
           letterSpacing: 0.8,
         ),
       ),
@@ -327,7 +590,7 @@ class _TypeChip extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  CHART SKELETON  — shown while candles is empty AND loadingCandles == true
+//  CHART SKELETON
 // ════════════════════════════════════════════════════════════════════════════
 
 class _ChartSkeleton extends StatefulWidget {
@@ -338,20 +601,18 @@ class _ChartSkeleton extends StatefulWidget {
   State<_ChartSkeleton> createState() => _ChartSkeletonState();
 }
 
-class _ChartSkeletonState extends State<_ChartSkeleton>
-    with SingleTickerProviderStateMixin {
+class _ChartSkeletonState extends State<_ChartSkeleton> with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
-  late Animation<double>   _shimmer;
+  late Animation<double> _shimmer;
 
   @override
   void initState() {
     super.initState();
     _ctrl = AnimationController(
-      vsync:    this,
+      vsync: this,
       duration: const Duration(milliseconds: 1400),
     )..repeat(reverse: true);
-    _shimmer = Tween<double>(begin: 0.03, end: 0.12)
-        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    _shimmer = Tween<double>(begin: 0.03, end: 0.12).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override
@@ -369,7 +630,6 @@ class _ChartSkeletonState extends State<_ChartSkeleton>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Fake candle bars
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -381,8 +641,7 @@ class _ChartSkeletonState extends State<_ChartSkeleton>
                     width: 12,
                     height: h,
                     decoration: BoxDecoration(
-                      color: AppTheme.textMuted
-                          .withOpacity(_shimmer.value + 0.04 * (i % 3)),
+                      color: AppTheme.textMuted.withOpacity(_shimmer.value + 0.04 * (i % 3)),
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
@@ -407,20 +666,16 @@ class _ChartSkeletonState extends State<_ChartSkeleton>
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  WATCHLIST PANE  — v11.3: full-object tap + live indicator on tile
+//  WATCHLIST PANE
 // ════════════════════════════════════════════════════════════════════════════
 
 class _WatchlistPane extends StatelessWidget {
   const _WatchlistPane({required this.compact});
   final bool compact;
 
-  // ── v11.3: called on tile tap ─────────────────────────────────────────────
   void _handleTileTap(BuildContext context, WatchlistItem w) {
     final state = context.read<MarketState>();
-    // selectSymbol() performs a deep flush + starts the live timer if crypto.
     state.selectSymbol(w.symbol);
-    // For crypto assets kick off an immediate quantum scan so the signal card
-    // populates right away instead of waiting for the first timer tick.
     if (w.isCrypto || w.is24h) {
       Future.microtask(() => state.runQuantumScan());
     }
@@ -431,7 +686,7 @@ class _WatchlistPane extends StatelessWidget {
     final s = context.watch<MarketState>();
 
     return AnimatedSwitcher(
-      duration:      const Duration(milliseconds: 320),
+      duration: const Duration(milliseconds: 320),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       child: ListView(
@@ -443,8 +698,8 @@ class _WatchlistPane extends StatelessWidget {
             child: Text(
               'WATCHLIST',
               style: TextStyle(
-                color:       AppTheme.gold,
-                fontWeight:  FontWeight.w900,
+                color: AppTheme.gold,
+                fontWeight: FontWeight.w900,
                 letterSpacing: 3,
                 fontSize: 11,
               ),
@@ -461,24 +716,20 @@ class _WatchlistPane extends StatelessWidget {
             return Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Material(
-                color:        sel ? AppTheme.panel : AppTheme.oledBlack,
+                color: sel ? AppTheme.panel : AppTheme.oledBlack,
                 borderRadius: BorderRadius.circular(10),
                 child: InkWell(
-                  onTap:        () => _handleTileTap(context, w),
+                  onTap: () => _handleTileTap(context, w),
                   borderRadius: BorderRadius.circular(10),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 240),
-                    curve:    Curves.easeOutCubic,
-                    padding:  const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
+                    curve: Curves.easeOutCubic,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
                         color: sel
-                            ? (w.isCrypto
-                                ? const Color(0xFFF7931A)
-                                : AppTheme.gold)
-                                .withOpacity(0.55)
+                            ? (w.isCrypto ? const Color(0xFFF7931A) : AppTheme.gold).withOpacity(0.55)
                             : AppTheme.border,
                         width: sel ? 1.4 : 1,
                       ),
@@ -491,12 +742,8 @@ class _WatchlistPane extends StatelessWidget {
                             Text(
                               w.symbol,
                               style: TextStyle(
-                                color: sel
-                                    ? (w.isCrypto
-                                        ? const Color(0xFFF7931A)
-                                        : AppTheme.gold)
-                                    : AppTheme.textPrimary,
-                                fontWeight:  FontWeight.w800,
+                                color: sel ? (w.isCrypto ? const Color(0xFFF7931A) : AppTheme.gold) : AppTheme.textPrimary,
+                                fontWeight: FontWeight.w800,
                                 letterSpacing: 1.2,
                                 fontSize: compact ? 13 : 14,
                               ),
@@ -509,13 +756,12 @@ class _WatchlistPane extends StatelessWidget {
                               ),
                             if (w.is24h) ...[
                               const SizedBox(width: 4),
-                              _TypeChip(
+                              const _TypeChip(
                                 label: '24/7',
                                 color: AppTheme.signalBuy,
                               ),
                             ],
                             const Spacer(),
-                            // v11.3: pulsing live dot on selected crypto tile
                             if (sel && s.isLive) ...[
                               const _TileLiveDot(),
                               const SizedBox(width: 6),
@@ -524,20 +770,18 @@ class _WatchlistPane extends StatelessWidget {
                               Text(
                                 '${w.changePct! >= 0 ? "+" : ""}${w.changePct!.toStringAsFixed(2)}%',
                                 style: TextStyle(
-                                  color: w.changePct! >= 0
-                                      ? AppTheme.signalBuy
-                                      : AppTheme.signalSell,
-                                  fontSize:   11,
+                                  color: w.changePct! >= 0 ? AppTheme.signalBuy : AppTheme.signalSell,
+                                  fontSize: 11,
                                   fontWeight: FontWeight.w700,
                                 ),
                               ),
                           ],
                         ),
-                        if (w.name != null)
+                        if (w.name != null && w.name!.isNotEmpty)
                           Text(
                             w.name!,
                             style: const TextStyle(
-                              color:    AppTheme.textMuted,
+                              color: AppTheme.textMuted,
                               fontSize: 11,
                             ),
                           ),
@@ -554,8 +798,6 @@ class _WatchlistPane extends StatelessWidget {
   }
 }
 
-// ─── Tiny live dot shown on the selected crypto tile ─────────────────────────
-
 class _TileLiveDot extends StatefulWidget {
   const _TileLiveDot();
 
@@ -563,15 +805,14 @@ class _TileLiveDot extends StatefulWidget {
   State<_TileLiveDot> createState() => _TileLiveDotState();
 }
 
-class _TileLiveDotState extends State<_TileLiveDot>
-    with SingleTickerProviderStateMixin {
+class _TileLiveDotState extends State<_TileLiveDot> with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
 
   @override
   void initState() {
     super.initState();
     _ctrl = AnimationController(
-      vsync:    this,
+      vsync: this,
       duration: const Duration(milliseconds: 800),
     )..repeat(reverse: true);
   }
@@ -587,17 +828,15 @@ class _TileLiveDotState extends State<_TileLiveDot>
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) => Container(
-        width:  7,
+        width: 7,
         height: 7,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: AppTheme.signalBuy.withOpacity(
-            0.4 + 0.6 * _ctrl.value,
-          ),
+          color: AppTheme.signalBuy.withOpacity(0.4 + 0.6 * _ctrl.value),
           boxShadow: [
             BoxShadow(
-              color:       AppTheme.signalBuy.withOpacity(0.3 * _ctrl.value),
-              blurRadius:  4,
+              color: AppTheme.signalBuy.withOpacity(0.3 * _ctrl.value),
+              blurRadius: 4,
               spreadRadius: 1,
             ),
           ],
@@ -608,30 +847,26 @@ class _TileLiveDotState extends State<_TileLiveDot>
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  SCAN & SIGNAL COLUMN  — v11.3: shows LIVE AUTO-SCAN row when isLive
+//  SCAN & SIGNAL COLUMN
 // ════════════════════════════════════════════════════════════════════════════
 
 class _ScanAndSignalColumn extends StatelessWidget {
+  const _ScanAndSignalColumn();
+
   @override
   Widget build(BuildContext context) {
-    final s    = context.watch<MarketState>();
-    final mi   = s.lastAnalysis?.intelligence;
-    final sig  = mi?.safetySignal  ?? '—';
-    final str  = mi?.signalStrength.toDouble() ?? 0;
-    final dir  = mi?.direction      ?? '';
-    final prob = mi?.probabilityBull ?? 50;
+    final s = context.watch<MarketState>();
+    final mi = s.lastAnalysis?.intelligence;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // ── Manual scan button ────────────────────────────────────────────
         FilledButton.icon(
           style: FilledButton.styleFrom(
             backgroundColor: AppTheme.gold.withOpacity(0.12),
             foregroundColor: AppTheme.gold,
             padding: const EdgeInsets.symmetric(vertical: 16),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             side: const BorderSide(color: AppTheme.goldDim),
           ),
           onPressed: s.scanning
@@ -646,26 +881,19 @@ class _ScanAndSignalColumn extends StatelessWidget {
               ? const SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: AppTheme.gold),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.gold),
                 )
               : const Icon(Icons.radar),
-          label:
-              Text(s.scanning ? 'SCANNING…' : 'QUANTUM SCAN'),
+          label: Text(s.scanning ? 'SCANNING…' : 'QUANTUM SCAN'),
         ),
-
-        // ── v11.3: live auto-scan status row ─────────────────────────────
         if (s.isLive) ...[
           const SizedBox(height: 8),
           Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color:        AppTheme.signalBuy.withOpacity(0.05),
+              color: AppTheme.signalBuy.withOpacity(0.05),
               borderRadius: BorderRadius.circular(8),
-              border:       Border.all(
-                color: AppTheme.signalBuy.withOpacity(0.2),
-              ),
+              border: Border.all(color: AppTheme.signalBuy.withOpacity(0.2)),
             ),
             child: Row(
               children: [
@@ -675,9 +903,9 @@ class _ScanAndSignalColumn extends StatelessWidget {
                   child: Text(
                     'LIVE AUTO-SCAN ACTIVE',
                     style: TextStyle(
-                      color:       AppTheme.signalBuy,
-                      fontSize:    9,
-                      fontWeight:  FontWeight.bold,
+                      color: AppTheme.signalBuy,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
                       letterSpacing: 1.2,
                     ),
                   ),
@@ -685,7 +913,7 @@ class _ScanAndSignalColumn extends StatelessWidget {
                 Text(
                   'GEN ${s.scanGeneration}',
                   style: const TextStyle(
-                    color:    AppTheme.textMuted,
+                    color: AppTheme.textMuted,
                     fontSize: 9,
                     fontFamily: 'monospace',
                   ),
@@ -694,15 +922,17 @@ class _ScanAndSignalColumn extends StatelessWidget {
             ),
           ),
         ],
-
         const SizedBox(height: 12),
         Expanded(
           child: SingleChildScrollView(
             child: GlowingSignalCard(
-              signal:      sig,
-              strength:    str,
-              direction:   dir,
-              probability: prob,
+              signal: mi?.safetySignal ?? 'AWAITING SCAN',
+              strength: mi?.signalStrength.toDouble() ?? 0,
+              direction: mi?.direction ?? 'NEUTRAL',
+              probability: mi?.probabilityBull ?? 50,
+              intelligence: mi,
+              tradePlan: mi?.tradePlan,
+              newsItems: s.currentNews,
             ),
           ),
         ),
@@ -712,7 +942,7 @@ class _ScanAndSignalColumn extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  MOBILE TERMINAL  — v11.3: full-object tap + live dot + chart skeleton
+//  MOBILE TERMINAL
 // ════════════════════════════════════════════════════════════════════════════
 
 class MobileTerminal extends StatelessWidget {
@@ -728,38 +958,60 @@ class MobileTerminal extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final s    = context.watch<MarketState>();
+    final s = context.watch<MarketState>();
     final item = s.selectedItem;
+    final mi = s.lastAnalysis?.intelligence;
 
     return CustomScrollView(
       slivers: [
         SliverAppBar(
-          pinned:          true,
+          pinned: true,
           backgroundColor: AppTheme.oledBlack,
           title: Row(
             children: [
-              const Text('NEXUS · QUANTUM'),
+              const Text(
+                'NEXUS',
+                style: TextStyle(
+                  color: AppTheme.gold,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'v13.4',
+                style: TextStyle(
+                  color: AppTheme.textMuted,
+                  fontSize: 10,
+                  letterSpacing: 1,
+                ),
+              ),
+              const SizedBox(width: 8),
+              _AuthBadge(user: s.currentUser),
               if (s.isLive) ...[
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 const _PulsingLiveChip(),
               ],
             ],
           ),
           actions: [
+            _CalendarButton(eventCount: s.upcomingEvents.length),
             IconButton(
-              tooltip:   'Refresh chart',
-              onPressed: s.loadingCandles
-                  ? null
-                  : () => s.refreshCandles(),
-              icon: const Icon(Icons.refresh,
-                  color: AppTheme.goldDim),
+              tooltip: 'Refresh chart',
+              onPressed: s.loadingCandles ? null : () => s.refreshCandles(),
+              icon: const Icon(Icons.refresh, color: AppTheme.goldDim),
+            ),
+            IconButton(
+              tooltip: 'Full quantum analysis',
+              onPressed: () => Navigator.pushNamed(context, '/analysis'),
+              icon: const Icon(Icons.analytics, color: AppTheme.gold),
             ),
           ],
         ),
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: _TopStatusBar(),
+            child: const _TopStatusBar(),
           ),
         ),
         SliverPadding(
@@ -767,7 +1019,7 @@ class MobileTerminal extends StatelessWidget {
           sliver: SliverList(
             delegate: SliverChildBuilderDelegate(
               (ctx, i) {
-                final w   = s.watchlist[i];
+                final w = s.watchlist[i];
                 final sel = w.symbol == s.selectedSymbol;
                 final chipColor = w.isCrypto
                     ? const Color(0xFFF7931A)
@@ -778,51 +1030,42 @@ class MobileTerminal extends StatelessWidget {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Material(
-                    color:        AppTheme.panel,
+                    color: AppTheme.panel,
                     borderRadius: BorderRadius.circular(12),
                     child: InkWell(
-                      onTap:        () => _handleTileTap(ctx, w),
+                      onTap: () => _handleTileTap(ctx, w),
                       borderRadius: BorderRadius.circular(12),
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 260),
-                        curve:    Curves.easeOutCubic,
-                        padding:  const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 14),
+                        curve: Curves.easeOutCubic,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
                             color: sel
-                                ? (w.isCrypto
-                                    ? const Color(0xFFF7931A)
-                                    : AppTheme.signalBuy)
-                                    .withOpacity(0.55)
+                                ? (w.isCrypto ? const Color(0xFFF7931A) : AppTheme.signalBuy).withOpacity(0.55)
                                 : AppTheme.border,
                           ),
                         ),
                         child: Row(
                           children: [
                             Icon(
-                              sel
-                                  ? Icons.show_chart
-                                  : Icons.candlestick_chart,
-                              color: sel
-                                  ? AppTheme.signalBuy
-                                  : AppTheme.textMuted,
+                              sel ? Icons.show_chart : Icons.candlestick_chart,
+                              color: sel ? AppTheme.signalBuy : AppTheme.textMuted,
                             ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Row(
                                     children: [
                                       Text(
                                         w.symbol,
                                         style: const TextStyle(
-                                          fontWeight:  FontWeight.w800,
+                                          fontWeight: FontWeight.w800,
                                           letterSpacing: 1.1,
-                                          color:       AppTheme.textPrimary,
+                                          color: AppTheme.textPrimary,
                                         ),
                                       ),
                                       const SizedBox(width: 6),
@@ -833,22 +1076,21 @@ class MobileTerminal extends StatelessWidget {
                                         ),
                                       if (w.is24h) ...[
                                         const SizedBox(width: 4),
-                                        _TypeChip(
+                                        const _TypeChip(
                                           label: '24/7',
                                           color: AppTheme.signalBuy,
                                         ),
                                       ],
                                     ],
                                   ),
-                                  if (w.name != null)
-                                    Text(w.name!,
-                                        style: const TextStyle(
-                                            color:    AppTheme.textMuted,
-                                            fontSize: 12)),
+                                  if (w.name != null && w.name!.isNotEmpty)
+                                    Text(
+                                      w.name!,
+                                      style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                                    ),
                                 ],
                               ),
                             ),
-                            // v11.3: live dot on selected crypto tile
                             if (sel && s.isLive) ...[
                               const _TileLiveDot(),
                               const SizedBox(width: 8),
@@ -857,9 +1099,7 @@ class MobileTerminal extends StatelessWidget {
                               Text(
                                 '${w.changePct! >= 0 ? "+" : ""}${w.changePct!.toStringAsFixed(2)}%',
                                 style: TextStyle(
-                                  color: w.changePct! >= 0
-                                      ? AppTheme.signalBuy
-                                      : AppTheme.signalSell,
+                                  color: w.changePct! >= 0 ? AppTheme.signalBuy : AppTheme.signalSell,
                                   fontWeight: FontWeight.w800,
                                 ),
                               ),
@@ -874,7 +1114,6 @@ class MobileTerminal extends StatelessWidget {
             ),
           ),
         ),
-        // ── Chart or skeleton ───────────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -884,35 +1123,42 @@ class MobileTerminal extends StatelessWidget {
                 color: AppTheme.panel,
                 child: s.loadingCandles && s.candles.isEmpty
                     ? const _ChartSkeleton(height: 380)
-                    : NexusCandleChart(
-                        data:          s.candles,
-                        height:        380,
-                        assetType:     item?.type  ?? '',
-                        is24h:         item?.is24h ?? false,
-                        decimalPlaces:
-                            item?.type == 'forex' ? 5 : 2,
+                    : Stack(
+                        children: [
+                          NexusCandleChart(
+                            data: s.candles,
+                            liveTickNotifier: s.liveTickNotifier,
+                            height: 380,
+                            assetType: item?.type ?? '',
+                            is24h: item?.is24h ?? false,
+                            decimalPlaces: item?.type == 'forex' ? 5 : 2,
+                          ),
+                          if (s.lastAnalysis != null)
+                            Positioned.fill(
+                              child: AnalysisOverlay(
+                                intelligence: s.lastAnalysis!.intelligence,
+                              ),
+                            ),
+                        ],
                       ),
               ),
             ),
           ),
         ),
-        // ── Signal card ─────────────────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 8),
-            child: Builder(builder: (context) {
-              final mi = s.lastAnalysis?.intelligence;
-              return GlowingSignalCard(
-                signal:      mi?.safetySignal ?? 'AWAITING SCAN',
-                strength:    mi?.signalStrength.toDouble() ?? 0,
-                direction:   mi?.direction ?? '',
-                probability: mi?.probabilityBull ?? 50,
-              );
-            }),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: GlowingSignalCard(
+              signal: mi?.safetySignal ?? 'AWAITING SCAN',
+              strength: mi?.signalStrength.toDouble() ?? 0,
+              direction: mi?.direction ?? 'NEUTRAL',
+              probability: mi?.probabilityBull ?? 50,
+              intelligence: mi,
+              tradePlan: mi?.tradePlan,
+              newsItems: s.currentNews,
+            ),
           ),
         ),
-        // ── Scan button ─────────────────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
@@ -921,14 +1167,11 @@ class MobileTerminal extends StatelessWidget {
                 if (s.isLive) ...[
                   Container(
                     margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
-                      color:        AppTheme.signalBuy.withOpacity(0.05),
+                      color: AppTheme.signalBuy.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(8),
-                      border:       Border.all(
-                        color: AppTheme.signalBuy.withOpacity(0.2),
-                      ),
+                      border: Border.all(color: AppTheme.signalBuy.withOpacity(0.2)),
                     ),
                     child: Row(
                       children: [
@@ -938,8 +1181,8 @@ class MobileTerminal extends StatelessWidget {
                           child: Text(
                             'LIVE AUTO-SCAN ACTIVE',
                             style: TextStyle(
-                              color:      AppTheme.signalBuy,
-                              fontSize:   9,
+                              color: AppTheme.signalBuy,
+                              fontSize: 9,
                               fontWeight: FontWeight.bold,
                               letterSpacing: 1.2,
                             ),
@@ -948,7 +1191,7 @@ class MobileTerminal extends StatelessWidget {
                         Text(
                           'GEN ${s.scanGeneration}',
                           style: const TextStyle(
-                            color:    AppTheme.textMuted,
+                            color: AppTheme.textMuted,
                             fontSize: 9,
                             fontFamily: 'monospace',
                           ),
@@ -959,29 +1202,44 @@ class MobileTerminal extends StatelessWidget {
                 ],
                 FilledButton.icon(
                   style: FilledButton.styleFrom(
-                    backgroundColor:
-                        AppTheme.signalBuy.withOpacity(0.12),
+                    backgroundColor: AppTheme.signalBuy.withOpacity(0.12),
                     foregroundColor: AppTheme.signalBuy,
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                    side: const BorderSide(
-                        color: AppTheme.signalBuy),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    side: const BorderSide(color: AppTheme.signalBuy),
                   ),
                   onPressed: s.scanning
                       ? null
                       : () async {
-                          await context
-                              .read<MarketState>()
-                              .runQuantumScan();
+                          await context.read<MarketState>().runQuantumScan();
                           if (context.mounted) {
-                            await showInterstitialPlaceholder(
-                                context);
+                            await showInterstitialPlaceholder(context);
                           }
                         },
                   icon: const Icon(Icons.radar),
-                  label: Text(
-                      s.scanning ? 'SCANNING…' : 'QUANTUM SCAN'),
+                  label: Text(s.scanning ? 'SCANNING…' : 'QUANTUM SCAN'),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppTheme.gold,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () => Navigator.pushNamed(context, '/analysis'),
+                    icon: const Icon(Icons.analytics, size: 18),
+                    label: const Text(
+                      'FULL ANALYSIS →',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -993,7 +1251,7 @@ class MobileTerminal extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  HOME SHELL  (unchanged routing logic)
+//  HOME SHELL
 // ════════════════════════════════════════════════════════════════════════════
 
 class HomeShell extends StatelessWidget {
@@ -1009,15 +1267,15 @@ class HomeShell extends StatelessWidget {
           builder: (context, c) {
             final desktop = c.maxWidth >= _kDesktopBreakpoint;
             return AnimatedSwitcher(
-              duration:      const Duration(milliseconds: 420),
-              switchInCurve:  Curves.easeOutCubic,
+              duration: const Duration(milliseconds: 420),
+              switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
               transitionBuilder: (child, anim) => FadeTransition(
                 opacity: anim,
                 child: SlideTransition(
                   position: Tween<Offset>(
                     begin: const Offset(0.02, 0),
-                    end:   Offset.zero,
+                    end: Offset.zero,
                   ).animate(anim),
                   child: child,
                 ),

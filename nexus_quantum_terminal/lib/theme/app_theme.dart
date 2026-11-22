@@ -1,68 +1,84 @@
-// ============================================================================
-//  NEXUS v11.2 — app_theme.dart
-//  Strict OLED black + Bloomberg gold + neon signal accents.
-//  No changes from v11.1 — reproduced in full for completeness.
-// ============================================================================
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../utils/app_colors.dart';
+import '../utils/constants.dart';
 
-abstract final class AppTheme {
-  static const Color oledBlack  = Color(0xFF000000);
-  static const Color panel      = Color(0xFF0A0A0A);
-  static const Color border     = Color(0xFF1A1A1A);
-  static const Color gold       = Color(0xFFD4AF37);
-  static const Color goldDim    = Color(0xFF8A7428);
-  static const Color textPrimary = Color(0xFFE8E8E8);
-  static const Color textMuted  = Color(0xFF6B6B6B);
-  static const Color signalBuy  = Color(0xFF00FF88);
-  static const Color signalSell = Color(0xFFFF3131);
+class AppTheme {
+  AppTheme._();
 
-  static ThemeData get dark => ThemeData(
-        brightness: Brightness.dark,
-        useMaterial3: true,
-        scaffoldBackgroundColor: oledBlack,
-        colorScheme: const ColorScheme.dark(
-          surface:   panel,
-          primary:   gold,
-          secondary: signalBuy,
-          error:     signalSell,
-          onSurface: textPrimary,
+  static ThemeData get darkTheme {
+    return ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.dark,
+      scaffoldBackgroundColor: AppColors.background,
+      colorScheme: const ColorScheme.dark(
+        primary: AppColors.primary,
+        secondary: AppColors.primaryLight,
+        surface: AppColors.cardBackground,
+        error: AppColors.bearish,
+        onPrimary: Colors.black,
+        onSurface: AppColors.textPrimary,
+        onError: Colors.white,
+      ),
+      fontFamily: 'Inter',
+      appBarTheme: const AppBarTheme(
+        backgroundColor: AppColors.background,
+        foregroundColor: AppColors.textPrimary,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        systemOverlayStyle: SystemUiOverlayStyle(
+          statusBarColor: AppColors.background,
+          statusBarIconBrightness: Brightness.light,
         ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: oledBlack,
-          foregroundColor: gold,
-          elevation: 0,
-          centerTitle: false,
-          titleTextStyle: TextStyle(
-            fontFamily:  'monospace',
-            fontSize:    18,
-            fontWeight:  FontWeight.w700,
-            letterSpacing: 1.2,
-            color:       gold,
-          ),
+      ),
+      cardTheme: CardTheme(
+        color: AppColors.cardBackground,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppConstants.cardRadius),
+          side: const BorderSide(color: AppColors.border, width: 1),
         ),
-        dividerColor: border,
-        cardTheme: CardTheme(
-          color:     panel,
-          elevation: 0,
-          shape:     RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: border, width: 1),
-          ),
+        margin: const EdgeInsets.symmetric(
+          horizontal: AppConstants.screenPadding,
+          vertical: AppConstants.spacingSmall,
         ),
-        listTileTheme: const ListTileThemeData(
-          iconColor: goldDim,
-          textColor: textPrimary,
-        ),
-        snackBarTheme: SnackBarThemeData(
-          backgroundColor: panel,
-          contentTextStyle: const TextStyle(color: textPrimary),
-          behavior: SnackBarBehavior.floating,
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.primary,
+          foregroundColor: Colors.black,
+          minimumSize: const Size(double.infinity, AppConstants.buttonHeight),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-            side: const BorderSide(color: goldDim, width: 0.5),
+            borderRadius: BorderRadius.circular(AppConstants.cardRadiusSmall),
           ),
+          elevation: 0,
         ),
-        fontFamily: 'Roboto',
-      );
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: AppColors.cardBackground,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppConstants.cardPadding,
+          vertical: AppConstants.spacingMedium,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppConstants.cardRadiusSmall),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppConstants.cardRadiusSmall),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppConstants.cardRadiusSmall),
+          borderSide: const BorderSide(color: AppColors.primary, width: 2),
+        ),
+      ),
+      dividerTheme: const DividerThemeData(
+        color: AppColors.border,
+        thickness: 1,
+      ),
+    );
+  }
 }
